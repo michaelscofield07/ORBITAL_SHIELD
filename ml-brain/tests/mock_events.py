@@ -277,13 +277,306 @@ SCENARIO_5_EVENTS = [
     },
 ]
 
+
+# --------------------------------------------------------------
+# SCENARIO 6: CCSDS Telecommand Malformation + Uplink Replay
+# Pattern: CCSDS TC header checksum failure on OBC followed by
+# a replay of a previously accepted TC packet — classic
+# protocol-level attack vector (CWE-354, CCSDS 232.0-B-4 §5.3)
+# Expected: RULE_005 fires -> CRITICAL_THREAT_CLUSTER
+# Both events are HIGH/CRITICAL, confidence >= 0.85, same satellite
+# --------------------------------------------------------------
+SCENARIO_6_EVENTS = [
+    {
+        "event_id":     "EVT-S6-001",
+        "timestamp":    _ts(0),
+        "source":       "UPLINK",
+        "satellite_id": "SAT-GEO-01",
+        "event_type":   "UNAUTHORIZED_COMMAND",
+        "severity":     "HIGH",
+        "confidence":   0.92,
+        "description":  (
+            "CCSDS TC transfer frame received with invalid FECF checksum "
+            "(0xDEAD vs expected 0xA1B2). Frame accepted by legacy OBC firmware "
+            "despite checksum failure — possible malformed-TC injection. "
+            "CCSDS 232.0-B-4 §5.3.3 violation."
+        ),
+        "action":       "ALERT",
+        "evidence":     {
+            "ccsds_version": 1,
+            "apid": "0x7FF",
+            "fecf_received": "0xDEAD",
+            "fecf_expected": "0xA1B2",
+            "obc_accepted":  True,
+            "standard":      "CCSDS 232.0-B-4",
+        },
+        "related_events": [],
+        "operator_id":  "OP-06",
+        "session_id":   "SESSION-GEO-001",
+    },
+    {
+        "event_id":     "EVT-S6-002",
+        "timestamp":    _ts(140),   # 2m 20s later — within RULE_005 5-min window
+        "source":       "DOWNLINK",
+        "satellite_id": "SAT-GEO-01",
+        "event_type":   "REPLAY_ATTACK",
+        "severity":     "CRITICAL",
+        "confidence":   0.96,
+        "description":  (
+            "Downlink telemetry confirms OBC executed an attitude-override manoeuvre "
+            "matching TC packet hash 0xA3F9BC12 — identical to a legitimate command "
+            "transmitted 47 minutes earlier. TC sequence counter not incremented. "
+            "Classic CCSDS anti-replay (CCSDS 355.0-B-2) bypass."
+        ),
+        "action":       "ALERT",
+        "evidence":     {
+            "tc_packet_hash":   "0xA3F9BC12",
+            "original_seq_cnt": 1042,
+            "replay_seq_cnt":   1042,
+            "time_delta_s":     2820,
+            "manoeuvre":        "ATTITUDE-OVERRIDE",
+            "standard":         "CCSDS 355.0-B-2",
+        },
+        "related_events": [],
+        "operator_id":  "OP-06",
+        "session_id":   "SESSION-GEO-001",
+    },
+]
+
+# --------------------------------------------------------------
+# SCENARIO 7: Credential-Stuffing Burst (CIC Brute-Force pattern)
+# Pattern: rapid-fire SUSPICIOUS_LOGIN events from same operator
+# across multiple console IPs (CIC-IDS-2017 brute-force profile:
+# inter-arrival < 1s, >4 attempts in 60s), followed by an
+# UNAUTHORIZED_COMMAND on a different source the moment one
+# attempt succeeds — cross-module session creation.
+# Expected: RULE_001 fires -> CROSS_MODULE_ATTACK
+# --------------------------------------------------------------
+SCENARIO_7_EVENTS = [
+    {
+        "event_id":     "EVT-S7-001",
+        "timestamp":    _ts(0),
+        "source":       "ACCESS",
+        "satellite_id": "SAT-LEO-03",
+        "event_type":   "SUSPICIOUS_LOGIN",
+        "severity":     "MEDIUM",
+        "confidence":   0.78,
+        "description":  (
+            "Login attempt 1/5 — OP-07 authenticated from 203.0.113.11 (AS-UNKNOWN). "
+            "Geo: CN/Beijing. Usual location: IN/Chennai. Credential-stuffing signature: "
+            "inter-arrival 0.4s, non-human typing cadence."
+        ),
+        "action":       "MONITOR",
+        "evidence":     {
+            "source_ip":      "203.0.113.11",
+            "geo":            "CN/Beijing",
+            "usual_geo":      "IN/Chennai",
+            "attempt_no":     1,
+            "inter_arrival_s": 0.4,
+            "cic_pattern":    "brute_force_v2017",
+        },
+        "related_events": [],
+        "operator_id":  "OP-07",
+        "session_id":   "SESSION-STUFF-FAIL-1",
+    },
+    {
+        "event_id":     "EVT-S7-002",
+        "timestamp":    _ts(1),    # 1s later
+        "source":       "ACCESS",
+        "satellite_id": "SAT-LEO-03",
+        "event_type":   "SUSPICIOUS_LOGIN",
+        "severity":     "MEDIUM",
+        "confidence":   0.81,
+        "description":  (
+            "Login attempt 2/5 — same operator, new IP 203.0.113.22. "
+            "Password spray pattern: different password hash each attempt."
+        ),
+        "action":       "MONITOR",
+        "evidence":     {
+            "source_ip":       "203.0.113.22",
+            "attempt_no":      2,
+            "inter_arrival_s": 0.9,
+        },
+        "related_events": [],
+        "operator_id":  "OP-07",
+        "session_id":   "SESSION-STUFF-FAIL-2",
+    },
+    {
+        "event_id":     "EVT-S7-003",
+        "timestamp":    _ts(55),   # 55s after first — still within 5-min window
+        "source":       "ACCESS",
+        "satellite_id": "SAT-LEO-03",
+        "event_type":   "SUSPICIOUS_LOGIN",
+        "severity":     "HIGH",
+        "confidence":   0.91,
+        "description":  (
+            "Login attempt 5/5 — SUCCEEDED. OP-07 authenticated from TOR exit node "
+            "203.0.113.99. Session SESSION-STUFF-OK-1 created. Account lockout policy "
+            "bypassed via distributed source IPs across attempts."
+        ),
+        "action":       "ALERT",
+        "evidence":     {
+            "source_ip":       "203.0.113.99",
+            "is_tor":          True,
+            "attempt_no":      5,
+            "lockout_bypassed": True,
+            "session_created": "SESSION-STUFF-OK-1",
+        },
+        "related_events": [],
+        "operator_id":  "OP-07",
+        "session_id":   "SESSION-STUFF-OK-1",
+    },
+    {
+        "event_id":     "EVT-S7-004",
+        "timestamp":    _ts(68),   # 13s after successful login
+        "source":       "UPLINK",
+        "satellite_id": "SAT-LEO-03",
+        "event_type":   "UNAUTHORIZED_COMMAND",
+        "severity":     "HIGH",
+        "confidence":   0.94,
+        "description":  (
+            "TC SAFE-MODE-DISABLE transmitted on session SESSION-STUFF-OK-1 "
+            "within 13s of suspicious login success. Command requires dual "
+            "authorisation — only one principal present. Credential-stuffing "
+            "→ immediate command injection is a known CCSDS attack sequence."
+        ),
+        "action":       "ALERT",
+        "evidence":     {
+            "command":          "SAFE-MODE-DISABLE",
+            "auth_required":    2,
+            "auth_provided":    1,
+            "seconds_post_auth": 13,
+        },
+        "related_events": [],
+        "operator_id":  "OP-07",
+        "session_id":   "SESSION-STUFF-OK-1",
+    },
+]
+
+# --------------------------------------------------------------
+# SCENARIO 8: Covert Exfiltration Chain
+# Pattern: DATA_EXFILTRATION detected on downlink (unexpected
+# high-bandwidth burst outside telemetry schedule) → ACCESS
+# violation (operator accessing classified key store) → UPLINK
+# command injection — multi-vector escalating sequence.
+# Expected: RULE_002 (escalating) + RULE_004 (multi-source) fire
+# --------------------------------------------------------------
+SCENARIO_8_EVENTS = [
+    {
+        "event_id":     "EVT-S8-001",
+        "timestamp":    _ts(0),
+        "source":       "DOWNLINK",
+        "satellite_id": "SAT-SIGINT-01",
+        "event_type":   "DATA_EXFILTRATION",
+        "severity":     "LOW",
+        "confidence":   0.68,
+        "description":  (
+            "Anomalous downlink bandwidth spike: 4.7 Mbps vs scheduled 0.8 Mbps "
+            "during non-telemetry window (03:12–03:19 UTC). Payload header shows "
+            "mission-data content type outside of downlink schedule. "
+            "Low severity — could be legitimate retransmission."
+        ),
+        "action":       "MONITOR",
+        "evidence":     {
+            "observed_mbps":    4.7,
+            "scheduled_mbps":   0.8,
+            "window":           "03:12-03:19Z",
+            "payload_type":     "MISSION_DATA",
+            "in_schedule":      False,
+        },
+        "related_events": [],
+        "operator_id":  "OP-08",
+        "session_id":   "SESSION-SIGINT-001",
+    },
+    {
+        "event_id":     "EVT-S8-002",
+        "timestamp":    _ts(300),  # 5 min later — within RULE_002 10-min window from this point
+        "source":       "ACCESS",
+        "satellite_id": "SAT-SIGINT-01",
+        "event_type":   "ACCESS_VIOLATION",
+        "severity":     "MEDIUM",
+        "confidence":   0.83,
+        "description":  (
+            "OP-08 accessed ENCRYPTION-KEY-STORE-SIGINT without prior approval. "
+            "Resource is clearance-TS restricted; operator holds SECRET clearance. "
+            "Access was read-only but key material was viewed for 4.2 seconds."
+        ),
+        "action":       "REVIEW",
+        "evidence":     {
+            "resource":          "ENCRYPTION-KEY-STORE-SIGINT",
+            "clearance_required": "TS",
+            "clearance_held":     "SECRET",
+            "access_type":       "READ",
+            "duration_s":        4.2,
+        },
+        "related_events": [],
+        "operator_id":  "OP-08",
+        "session_id":   "SESSION-SIGINT-001",
+    },
+    {
+        "event_id":     "EVT-S8-003",
+        "timestamp":    _ts(520),  # 8m 40s after first event
+        "source":       "UPLINK",
+        "satellite_id": "SAT-SIGINT-01",
+        "event_type":   "UNAUTHORIZED_COMMAND",
+        "severity":     "HIGH",
+        "confidence":   0.90,
+        "description":  (
+            "DOWNLINK-FILTER-BYPASS command injected — disables on-board downlink "
+            "content filtering. Combined with the earlier bandwidth spike and "
+            "encryption-key access, this completes a 3-stage exfiltration pattern: "
+            "STAGE_1=data_burst, STAGE_2=key_access, STAGE_3=filter_bypass."
+        ),
+        "action":       "ALERT",
+        "evidence":     {
+            "command":         "DOWNLINK-FILTER-BYPASS",
+            "auth_required":   2,
+            "auth_provided":   1,
+            "stage":           3,
+            "exfil_pattern":   "data_burst -> key_access -> filter_bypass",
+        },
+        "related_events": [],
+        "operator_id":  "OP-08",
+        "session_id":   "SESSION-SIGINT-001",
+    },
+    {
+        "event_id":     "EVT-S8-004",
+        "timestamp":    _ts(530),  # 10s after UPLINK command
+        "source":       "FIRMWARE",
+        "satellite_id": "SAT-SIGINT-01",
+        "event_type":   "INTEGRITY_FAILURE",
+        "severity":     "HIGH",
+        "confidence":   0.88,
+        "description":  (
+            "On-board FDIR (Fault Detection, Isolation, Recovery) reports unexpected "
+            "write to downlink driver firmware segment following DOWNLINK-FILTER-BYPASS. "
+            "Possible persistent implant installation. Hash mismatch on segment 0x4000-0x5FFF."
+        ),
+        "action":       "ALERT",
+        "evidence":     {
+            "segment":         "0x4000-0x5FFF",
+            "trigger_command": "DOWNLINK-FILTER-BYPASS",
+            "fdir_code":       "INTEGRITY_FAULT_32",
+            "hash_before":     "e3b0c44298fc1c149afb",
+            "hash_after":      "9a3bcde710ff20aa3344",
+        },
+        "related_events": [],
+        "operator_id":  "OP-08",
+        "session_id":   "SESSION-SIGINT-001",
+    },
+]
+
 ALL_SCENARIOS = {
-    "1": ("cross_module_same_session",   SCENARIO_1_EVENTS, "RULE_001 -> CROSS_MODULE_ATTACK"),
-    "2": ("escalating_severity",         SCENARIO_2_EVENTS, "RULE_002 -> ESCALATING_INCIDENT"),
-    "3": ("firmware_plus_access",        SCENARIO_3_EVENTS, "RULE_003 -> SUPPLY_CHAIN_RISK"),
-    "4": ("multi_vector_attack",         SCENARIO_4_EVENTS, "RULE_004 -> MULTI_VECTOR_ATTACK"),
-    "5": ("low_noise_no_trigger",        SCENARIO_5_EVENTS, "No rule should fire"),
+    "1": ("cross_module_same_session",    SCENARIO_1_EVENTS, "RULE_001 -> CROSS_MODULE_ATTACK"),
+    "2": ("escalating_severity",          SCENARIO_2_EVENTS, "RULE_002 -> ESCALATING_INCIDENT"),
+    "3": ("firmware_plus_access",         SCENARIO_3_EVENTS, "RULE_003 -> SUPPLY_CHAIN_RISK"),
+    "4": ("multi_vector_attack",          SCENARIO_4_EVENTS, "RULE_004 -> MULTI_VECTOR_ATTACK"),
+    "5": ("low_noise_no_trigger",         SCENARIO_5_EVENTS, "No rule should fire"),
+    "6": ("ccsds_telecommand_malform",    SCENARIO_6_EVENTS, "RULE_005 -> CRITICAL_THREAT_CLUSTER (CCSDS TC checksum + replay)"),
+    "7": ("credential_stuffing_burst",    SCENARIO_7_EVENTS, "RULE_001 -> CROSS_MODULE_ATTACK (CIC brute-force + command injection)"),
+    "8": ("covert_exfiltration_chain",    SCENARIO_8_EVENTS, "RULE_002 + RULE_004 -> ESCALATING_INCIDENT / MULTI_VECTOR_ATTACK"),
 }
+
 
 
 # -------------------------------------------------------------
@@ -358,7 +651,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="ORBITAL SHIELD -- ML Brain Mock Event Generator"
     )
-    parser.add_argument("--scenario", choices=["1", "2", "3", "4", "5", "all"],
+    parser.add_argument("--scenario", choices=["1", "2", "3", "4", "5", "6", "7", "8", "all"],
                         default="all", help="Which scenario to run")
     parser.add_argument("--replay", action="store_true",
                         help="POST events to a running server instead of in-process")

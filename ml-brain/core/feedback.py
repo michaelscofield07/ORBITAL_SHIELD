@@ -58,6 +58,12 @@ def submit_feedback(incident_id: str, verdict: str, reviewer: str, notes: str | 
         reviewed_at=datetime.now(timezone.utc).isoformat()
     )
 
+    # Retrieve the feature vector that was snapshotted at correlation time.
+    # Propagate it into feedback_log so train_model() can use real features
+    # instead of placeholder constants — this is the core parity fix.
+    features_json: str | None = incident.get("features_json")
+    # features_json may already be a str (from DB) or None (legacy rows)
+
     # Store in feedback_log (the labeled training dataset — never delete)
     db.insert_feedback(
         incident_id=incident_id,
@@ -65,10 +71,12 @@ def submit_feedback(incident_id: str, verdict: str, reviewer: str, notes: str | 
         reviewer=reviewer,
         notes=notes,
         rule_id=incident.get("rule_id"),
-        risk_score=incident.get("risk_score")
+        risk_score=incident.get("risk_score"),
+        features_json=features_json,
     )
 
-    logger.info("Feedback stored: incident=%s verdict=%s reviewer=%s", incident_id, verdict, reviewer)
+    logger.info("Feedback stored: incident=%s verdict=%s reviewer=%s features_available=%s",
+                incident_id, verdict, reviewer, features_json is not None)
     return {
         "incident_id": incident_id,
         "verdict": verdict,

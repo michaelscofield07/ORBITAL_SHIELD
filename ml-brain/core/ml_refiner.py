@@ -15,6 +15,7 @@ Training data: CISO verdicts from POST /brain/feedback (feedback_log table).
 Retraining: triggered by POST /brain/retrain (described as "nightly in production").
 """
 
+import json
 import logging
 import pickle
 from pathlib import Path
@@ -168,29 +169,63 @@ def train_model(feedback_records: list[dict]) -> dict:
         }
 
     X, y = [], []
+    legacy_count = 0
     for fb in feedback_records:
-        # Retrieve the incident to build the feature vector
-        incident_id = fb["incident_id"]
-        rule_id     = fb.get("rule_id", "")
-        risk_score  = fb.get("risk_score", 50)
-        verdict     = fb["verdict"]
+        verdict = fb["verdict"]
 
-        # Minimal feature vector from denormalized feedback fields
-        sev_inferred = (
-            3 if risk_score > 70 else
-            2 if risk_score > 40 else
-            1 if risk_score > 20 else 0
+        # ─ Deserialize the snapshotted feature vector ──────────────────────
+        # features_json was stored on the incident at correlation time and
+        # propagated to feedback_log at CISO verdict submission time.
+        # If absent (legacy row pre-fix), fall back to best-effort reconstruction.
+        stored_features_json = fb.get("features_json")
+        if stored_features_json:
+            try:
+                stored_features = json.loads(stored_features_json) \
+                    if isinstance(stored_features_json, str) \
+                    else stored_features_json
+            except (json.JSONDecodeError, TypeError):
+                stored_features = None
+        else:
+            stored_features = None
+
+        if stored_features is None:
+            # Legacy row: best-effort from denormalized fields only
+            legacy_count += 1
+            risk_score = fb.get("risk_score", 50)
+            sev_inferred = (
+                3 if risk_score > 70 else
+                2 if risk_score > 40 else
+                1 if risk_score > 20 else 0
+            )
+            # Build a proxy incident dict and a blank features dict so
+            # _build_feature_vector() produces a consistent-length vector
+            proxy_incident = {
+                "rule_score":     risk_score,
+                "severity":       ["LOW", "MEDIUM", "HIGH", "CRITICAL"][sev_inferred],
+                "confidence":     0.8,   # unknown for legacy rows
+                "related_events": [],
+            }
+            feature_vec = _build_feature_vector(proxy_incident, {})
+        else:
+            # Happy path: use the real snapshotted feature vector
+            proxy_incident = {
+                "rule_score":     fb.get("risk_score", stored_features.get("satellite_match_count", 0)),
+                "severity":       "HIGH",   # severity is embedded in risk_score; not critical here
+                "confidence":     0.9,
+                "related_events": ["x"] * max(stored_features.get("satellite_match_count", 1), 1),
+            }
+            feature_vec = _build_feature_vector(proxy_incident, stored_features)
+
+        if feature_vec is not None:
+            X.append(feature_vec)
+            y.append(verdict)
+
+    if legacy_count > 0:
+        logger.warning(
+            "ML retrain: %d/%d feedback rows have no stored features (pre-fix legacy rows). "
+            "Submit new feedback after the fix to improve training quality.",
+            legacy_count, len(feedback_records)
         )
-        feature_vec = [
-            risk_score,
-            sev_inferred,
-            0.8,   # confidence placeholder (not stored in feedback)
-            2,     # avg related_events count placeholder
-            2,     # distinct_source_count placeholder
-            1, 1, 1, 0
-        ]
-        X.append(feature_vec)
-        y.append(verdict)
 
     X_arr = X
     y_arr = y

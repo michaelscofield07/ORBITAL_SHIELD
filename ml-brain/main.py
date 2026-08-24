@@ -186,6 +186,12 @@ async def ingest_event(event: IncomingEvent, background_tasks: BackgroundTasks):
         # Optional ML refinement (bounded ±cap, transparent no-op if inactive)
         incident = ml_refiner.refine_score(incident, features)
 
+        # Snapshot the feature vector onto the incident so it is stored in DB.
+        # This closes the training/inference parity gap: the exact same feature
+        # values used during inference will be retrieved at retrain time instead
+        # of being rebuilt from placeholder constants.
+        incident["features_json"] = features
+
         # Persist to DB
         db.insert_incident(incident)
 
@@ -267,10 +273,20 @@ async def get_correlation_detail(incident_id: str):
             if row:
                 raw_events.append(db._row_to_dict(row))
 
+    # Look up SPARTA / CERT-In metadata for the rule that fired this incident
+    with open(_CONFIG_PATH) as f:
+        cfg = yaml.safe_load(f)
+    rule_meta = next(
+        (r for r in cfg.get("rules", []) if r["id"] == incident.get("rule_id")),
+        {}
+    )
+
     return {
         **incident,
         "contributing_events": raw_events,
         "contributing_events_count": len(raw_events),
+        "sparta_technique_id": rule_meta.get("sparta_technique_id"),
+        "cert_in_category":    rule_meta.get("cert_in_category"),
     }
 
 
@@ -306,6 +322,8 @@ async def get_brain_status():
             time_window_seconds=r["conditions"].get("time_window_seconds", 300),
             min_sources=r["conditions"].get("min_sources", 2),
             min_events=r["conditions"].get("min_events", 2),
+            sparta_technique_id=r.get("sparta_technique_id"),
+            cert_in_category=r.get("cert_in_category"),
         )
         for r in rules_cfg
     ]

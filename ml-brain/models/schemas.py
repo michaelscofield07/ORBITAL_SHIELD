@@ -216,6 +216,9 @@ class RuleStatus(BaseModel):
     time_window_seconds: int
     min_sources:    int
     min_events:     int
+    # SPARTA v2.0 (space-systems ATT&CK) and CERT-In classification — metadata only
+    sparta_technique_id: Optional[str] = None
+    cert_in_category:    Optional[str] = None
 
 
 class BrainStatus(BaseModel):

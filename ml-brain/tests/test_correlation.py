@@ -636,3 +636,206 @@ class TestEndToEndPipeline:
         # Check audit log
         resp = test_client.get("/brain/audit-log")
         assert resp.status_code == 200
+
+
+# ─────────────────────────────────────────────────────────────
+# TEST BLOCK 10: Feature-parity regression
+# ─────────────────────────────────────────────────────────────
+
+class TestFeatureParity:
+    """
+    Regression tests for the training/inference feature-parity fix.
+
+    Before the fix, train_model() rebuilt feature vectors from hardcoded
+    placeholder constants, so two incidents with identical risk_score but
+    wildly different satellite/session/operator match counts would produce
+    IDENTICAL training rows — making the model unable to distinguish them.
+
+    After the fix, the real feature vector snapshotted at correlation time
+    is stored in features_json on both the incident and feedback_log rows,
+    and train_model() deserializes it.  These tests verify that invariant.
+    """
+
+    def test_different_match_counts_produce_different_feature_vectors(self, sliding_window, base_ts):
+        """
+        Two events with the same event_type/severity (→ same rule_score) but
+        different numbers of same-satellite events in the window must produce
+        different feature vectors from extract_features().
+        """
+        from core.ingestion import extract_features
+
+        # Event A: sits in a busy window (many same-satellite events)
+        busy_window = [
+            make_event(f"EVT-BG-{i:03d}", "DOWNLINK", "SAT-X", "TELEMETRY_ANOMALY",
+                       "HIGH", base_ts=base_ts, delta_seconds=i * 10)
+            for i in range(8)
+        ]
+        event_a = make_event("EVT-TARGET-A", "UPLINK", "SAT-X", "UNAUTHORIZED_COMMAND",
+                             "HIGH", base_ts=base_ts, delta_seconds=90)
+        features_a = extract_features(event_a, busy_window + [event_a])
+
+        # Event B: arrives in a nearly empty window (no same-satellite history)
+        event_b = make_event("EVT-TARGET-B", "UPLINK", "SAT-Y", "UNAUTHORIZED_COMMAND",
+                             "HIGH", base_ts=base_ts, delta_seconds=90)
+        features_b = extract_features(event_b, [event_b])
+
+        # Both events have the same event_type and severity → identical rule_score
+        # But they must differ in satellite_match_count, hence distinct feature vectors
+        assert features_a["satellite_match_count"] != features_b["satellite_match_count"], (
+            "satellite_match_count must differ between busy and empty windows"
+        )
+
+        # Build the numeric vectors (mimicking _build_feature_vector)
+        sev_map = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
+        incident_proxy = {
+            "rule_score":     55,   # identical for both
+            "severity":       "HIGH",
+            "confidence":     0.90,
+            "related_events": ["x", "y"],
+        }
+
+        from core.ml_refiner import _build_feature_vector
+        vec_a = _build_feature_vector(incident_proxy, features_a)
+        vec_b = _build_feature_vector(incident_proxy, features_b)
+
+        assert vec_a != vec_b, (
+            "Incidents with identical rule_score but different window context must "
+            "produce distinct feature vectors — this is the core parity invariant."
+        )
+
+    def test_feature_vectors_differ_from_all_zeros(self, sliding_window, base_ts):
+        """
+        Feature vectors computed from real events must not be the all-zeros vector
+        (which would indicate that no real features were extracted).
+        """
+        from core.ingestion import extract_features
+        from core.ml_refiner import _build_feature_vector
+
+        background = [
+            make_event(f"EVT-BG2-{i:03d}", "FIRMWARE", "SAT-Z", "FIRMWARE_TAMPERING",
+                       "CRITICAL", base_ts=base_ts, delta_seconds=i * 20)
+            for i in range(3)
+        ]
+        trigger = make_event("EVT-TRIG", "ACCESS", "SAT-Z", "SUSPICIOUS_LOGIN",
+                             "HIGH", base_ts=base_ts, delta_seconds=65)
+
+        features = extract_features(trigger, background + [trigger])
+        incident_proxy = {
+            "rule_score":     70,
+            "severity":       "HIGH",
+            "confidence":     0.90,
+            "related_events": ["x", "y", "z"],
+        }
+        vec = _build_feature_vector(incident_proxy, features)
+        assert vec is not None
+        assert any(v != 0 for v in vec), (
+            "Feature vector must not be all zeros when real window context exists."
+        )
+
+    def test_features_json_stored_on_incident_after_ingest(self, test_client):
+        """
+        After ingesting events that trigger a correlation, the generated incident
+        must have a non-null features_json column in the DB (verified via the
+        detail endpoint — we check that the incident is reachable and complete).
+        """
+        import json as _json
+        from db import database
+
+        base = datetime.now(timezone.utc)
+        for i, (src, etype, sev, delta) in enumerate([
+            ("ACCESS",   "SUSPICIOUS_LOGIN",     "MEDIUM", 0),
+            ("UPLINK",   "UNAUTHORIZED_COMMAND",  "HIGH",   45),
+            ("DOWNLINK", "TELEMETRY_ANOMALY",     "HIGH",   90),
+        ]):
+            test_client.post("/events/ingest", json={
+                "event_id":     f"EVT-FP-{i+1:03d}",
+                "timestamp":    (base + timedelta(seconds=delta)).isoformat(),
+                "source":       src,
+                "satellite_id": "SAT-FP-01",
+                "event_type":   etype,
+                "severity":     sev,
+                "confidence":   0.90,
+                "description":  f"Feature parity test event {i+1}",
+                "action":       "REVIEW",
+                "evidence":     {},
+                "related_events": [],
+                "operator_id":  "OP-FP",
+                "session_id":   "S-FP-001",
+            })
+
+        incidents = database.fetch_open_incidents()
+        assert len(incidents) >= 1, "At least one incident should have been created"
+
+        # Check that features_json is stored on the incident row
+        with database.get_connection() as conn:
+            row = conn.execute(
+                "SELECT features_json FROM incidents WHERE event_id = ?",
+                (incidents[0]["event_id"],)
+            ).fetchone()
+
+        assert row is not None
+        assert row["features_json"] is not None, (
+            "features_json must be stored on the incident row — "
+            "this column carries the feature snapshot used during retrain."
+        )
+
+        parsed = _json.loads(row["features_json"])
+        assert "satellite_match_count" in parsed
+        assert "session_match_count" in parsed
+        assert "operator_match_count" in parsed
+        assert "min_time_delta" in parsed
+
+    def test_feedback_inherits_features_json(self, test_client):
+        """
+        After submitting CISO feedback, the feedback_log row must carry the
+        same features_json that was stored on the incident.
+        """
+        import json as _json
+        from db import database
+
+        base = datetime.now(timezone.utc)
+        for i, (src, etype, sev, delta) in enumerate([
+            ("FIRMWARE", "FIRMWARE_TAMPERING", "CRITICAL", 0),
+            ("ACCESS",   "SUSPICIOUS_LOGIN",   "HIGH",     120),
+        ]):
+            test_client.post("/events/ingest", json={
+                "event_id":     f"EVT-FB-{i+1:03d}",
+                "timestamp":    (base + timedelta(seconds=delta)).isoformat(),
+                "source":       src,
+                "satellite_id": "SAT-FB-01",
+                "event_type":   etype,
+                "severity":     sev,
+                "confidence":   0.91,
+                "description":  f"Feedback parity test {i+1}",
+                "action":       "REVIEW",
+                "evidence":     {},
+                "related_events": [],
+                "operator_id":  "OP-FB",
+                "session_id":   "S-FB-001",
+            })
+
+        incidents = database.fetch_open_incidents()
+        assert len(incidents) >= 1
+
+        inc_id = incidents[0]["event_id"]
+        resp = test_client.post("/brain/feedback", json={
+            "incident_id": inc_id,
+            "verdict":     "CONFIRMED_REAL",
+            "reviewer":    "ciso_parity_test",
+        })
+        assert resp.status_code == 200
+
+        all_fb = database.fetch_all_feedback()
+        assert len(all_fb) >= 1
+
+        fb_row = next((f for f in all_fb if f["incident_id"] == inc_id), None)
+        assert fb_row is not None
+        assert fb_row["features_json"] is not None, (
+            "features_json must propagate from incident → feedback_log on verdict submission."
+        )
+
+        parsed = _json.loads(fb_row["features_json"])
+        assert "satellite_match_count" in parsed, (
+            "Stored features must contain satellite_match_count for ML training."
+        )
+

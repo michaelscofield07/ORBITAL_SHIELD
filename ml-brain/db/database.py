@@ -98,6 +98,7 @@ def init_db() -> None:
             reviewed_by     TEXT,
             review_notes    TEXT,
             reviewed_at     TEXT,
+            features_json   TEXT,              -- snapshotted feature vector at correlation time
             created_at      TEXT    NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_incidents_status    ON incidents(status);
@@ -114,6 +115,7 @@ def init_db() -> None:
             notes        TEXT,
             rule_id      TEXT,               -- denormalized for training queries
             risk_score   INTEGER,            -- denormalized for training queries
+            features_json TEXT,              -- snapshotted feature vector from ingestion.extract_features()
             submitted_at TEXT    NOT NULL,
             used_in_retrain INTEGER DEFAULT 0  -- 1 once incorporated into a retrain batch
         );
@@ -135,6 +137,19 @@ def init_db() -> None:
             notes        TEXT
         );
         """)
+
+        # ── Safe migrations for existing databases ────────────────────────────
+        # These are no-ops on a fresh DB (columns already exist); they add the
+        # columns to any pre-existing DB without destroying data.
+        for migration_sql in [
+            "ALTER TABLE incidents    ADD COLUMN features_json TEXT",
+            "ALTER TABLE feedback_log ADD COLUMN features_json TEXT",
+        ]:
+            try:
+                conn.execute(migration_sql)
+            except Exception:
+                pass  # column already exists — safe to ignore
+
     logger.info("Database initialised at %s", get_db_path())
 
 
@@ -197,14 +212,19 @@ def mark_events_correlated(event_ids: list[str]) -> None:
 # ─────────────────────────────────────────────────────────────
 
 def insert_incident(incident: dict) -> None:
+    # Serialise features dict to JSON string (None if not provided — legacy safe)
+    features_json = incident.get("features_json")
+    if features_json is not None and not isinstance(features_json, str):
+        features_json = json.dumps(features_json)
+
     with get_connection() as conn:
         conn.execute("""
             INSERT OR IGNORE INTO incidents
             (event_id, timestamp, source, event_type, severity, confidence,
              description, related_events, action, risk_score, rule_id, rule_name,
              rule_score, ml_adjustment, satellite_id, operator_id, session_id,
-             status, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             status, features_json, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             incident["event_id"],
             incident["timestamp"],
@@ -224,6 +244,7 @@ def insert_incident(incident: dict) -> None:
             incident.get("operator_id"),
             incident.get("session_id"),
             incident.get("status", "OPEN"),
+            features_json,
             datetime.now(timezone.utc).isoformat(),
         ))
 
@@ -269,14 +290,17 @@ def count_open_incidents() -> int:
 # ─────────────────────────────────────────────────────────────
 
 def insert_feedback(incident_id: str, verdict: str, reviewer: str,
-                    notes: str | None, rule_id: str | None, risk_score: int | None) -> None:
+                    notes: str | None, rule_id: str | None, risk_score: int | None,
+                    features_json: str | None = None) -> None:
+    """Store CISO verdict. features_json is the serialised feature vector snapshotted
+    at correlation time — used by train_model() to avoid placeholder drift."""
     with get_connection() as conn:
         conn.execute("""
             INSERT INTO feedback_log
-            (incident_id, verdict, reviewer, notes, rule_id, risk_score, submitted_at)
-            VALUES (?,?,?,?,?,?,?)
+            (incident_id, verdict, reviewer, notes, rule_id, risk_score, features_json, submitted_at)
+            VALUES (?,?,?,?,?,?,?,?)
         """, (incident_id, verdict, reviewer, notes, rule_id, risk_score,
-              datetime.now(timezone.utc).isoformat()))
+              features_json, datetime.now(timezone.utc).isoformat()))
 
 
 def fetch_unused_feedback() -> list[dict]:
