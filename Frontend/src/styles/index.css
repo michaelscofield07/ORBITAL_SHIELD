@@ -1,0 +1,47 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+@import "tailwindcss";
+
+@theme {
+  --color-void: #0B0E14;
+  --color-panel: #131822;
+  --color-signal: #4FD1C5;
+  --color-warnAmber: #E8A33D;
+  --color-alertRed: #E8544B;
+  --color-mist: #B8C4D9;
+
+  --font-display: "Space Grotesk", sans-serif;
+  --font-body: "IBM Plex Sans", sans-serif;
+  --font-mono: "IBM Plex Mono", monospace;
+}
+
+body {
+  background: radial-gradient(circle at 50% -20%, #151e2e 0%, #0B0E14 70%);
+  background-color: #0B0E14;
+  background-attachment: fixed;
+  color: #B8C4D9;
+}
+
+/* Hairline divider utility — upgraded to a translucent white for glass effect */
+.hairline {
+  border-color: rgba(255, 255, 255, 0.05);
+}
+
+/* Glow utilities */
+.glow-text-alert {
+  text-shadow: 0 0 10px rgba(232, 84, 75, 0.6);
+}
+.glow-text-signal {
+  text-shadow: 0 0 10px rgba(79, 209, 197, 0.6);
+}
+.glow-box-alert {
+  box-shadow: 0 0 15px rgba(232, 84, 75, 0.3), inset 0 0 10px rgba(232, 84, 75, 0.1);
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.status-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
