@@ -1,0 +1,164 @@
+# ============================================================
+# ORBITAL SHIELD — ML Correlation Brain
+# Correlation Rules + Score Weights Configuration
+# ============================================================
+# IMPORTANT: This file is hot-reloaded. Changes here take effect
+# on the next rule evaluation without restarting the service.
+# Every threshold change is logged as BRAIN_CONFIG_UPDATED.
+# ============================================================
+
+# ------------------------------------------------------------------
+# CORRELATION RULES
+# Each rule has:
+#   id          : unique identifier (used in audit logs)
+#   name        : human-readable label
+#   enabled     : toggle without removing the rule
+#   incident_type : the event_type emitted when the rule fires
+#   description : shown in auto-generated incident descriptions
+#   conditions  : evaluated by the correlation engine
+#     - time_window_seconds  : how far back to look
+#     - min_sources          : minimum distinct source modules
+#     - min_events           : minimum event count to fire
+#     - required_sources     : (optional) sources that MUST be present
+#     - match_key            : which join key to use (session_id / satellite_id)
+#     - severity_pattern     : (optional) ordered severity escalation required
+# ------------------------------------------------------------------
+
+rules:
+
+  - id: RULE_001
+    name: cross_module_same_session
+    enabled: true
+    incident_type: CROSS_MODULE_ATTACK
+    description: >
+      Two or more events from different security modules share the same operator
+      session within a short time window — a strong indicator of a coordinated
+      or compromised session spanning multiple subsystems.
+    conditions:
+      match_key: session_id
+      time_window_seconds: 300        # 5 minutes — editable live
+      min_sources: 2
+      min_events: 2
+      required_sources: []            # any combination of sources is valid
+
+  - id: RULE_002
+    name: escalating_severity_chain
+    enabled: true
+    incident_type: ESCALATING_INCIDENT
+    description: >
+      Events on the same satellite show a monotonically increasing severity
+      progression (LOW → MEDIUM → HIGH or higher) over the observation window,
+      suggesting a developing, multi-stage attack or cascading failure.
+    conditions:
+      match_key: satellite_id
+      time_window_seconds: 600        # 10 minutes — editable live
+      min_sources: 1
+      min_events: 3
+      severity_pattern: [LOW, MEDIUM, HIGH]   # must appear in this order (not necessarily consecutive)
+
+  - id: RULE_003
+    name: firmware_plus_access_anomaly
+    enabled: true
+    incident_type: SUPPLY_CHAIN_RISK
+    description: >
+      A FIRMWARE integrity event and an ACCESS anomaly event overlap within the
+      observation window on the same satellite — consistent with a supply-chain
+      attack pattern where a malicious firmware update accompanies stolen
+      credentials or an insider-threat login.
+    conditions:
+      match_key: satellite_id
+      time_window_seconds: 900        # 15 minutes — editable live
+      min_sources: 2
+      min_events: 2
+      required_sources: [FIRMWARE, ACCESS]
+
+  - id: RULE_004
+    name: multi_source_same_satellite
+    enabled: true
+    incident_type: MULTI_VECTOR_ATTACK
+    description: >
+      Three or more independent security modules have each fired at least one
+      event against the same satellite within the observation window — consistent
+      with a broad, multi-vector attack against a single asset.
+    conditions:
+      match_key: satellite_id
+      time_window_seconds: 600        # 10 minutes — editable live
+      min_sources: 3
+      min_events: 3
+      required_sources: []
+
+  - id: RULE_005
+    name: high_confidence_critical_pair
+    enabled: true
+    incident_type: CRITICAL_THREAT_CLUSTER
+    description: >
+      Two or more HIGH/CRITICAL severity events with confidence >= 0.85 from
+      different modules target the same operator or satellite — high-fidelity
+      signals pointing to a confirmed threat needing immediate human review.
+    conditions:
+      match_key: satellite_id
+      time_window_seconds: 300        # 5 minutes — editable live
+      min_sources: 2
+      min_events: 2
+      required_sources: []
+      min_severity: HIGH              # only HIGH or CRITICAL events count
+      min_confidence: 0.85
+
+# ------------------------------------------------------------------
+# RISK SCORING WEIGHTS
+# Base score starts at 0. Each matched event_type adds its weight.
+# Bonus points are added for additional source modules beyond the first.
+# Severity thresholds convert the final score to a severity label.
+# ------------------------------------------------------------------
+
+scoring:
+  weights:
+    TELEMETRY_ANOMALY:    25
+    SUSPICIOUS_LOGIN:     20
+    UNAUTHORIZED_COMMAND: 35
+    FIRMWARE_TAMPERING:   50
+    COMMAND_INJECTION:    30
+    ACCESS_VIOLATION:     20
+    REPLAY_ATTACK:        25
+    SIGNAL_INTERFERENCE:  15
+    DATA_EXFILTRATION:    40
+    INTEGRITY_FAILURE:    35
+
+  multi_source_bonus: 10    # added for each source beyond the first
+
+  # ML refiner is allowed to adjust the rule-engine score by at most this amount
+  ml_adjustment_cap: 15     # ± points maximum adjustment from ML layer
+
+  severity_thresholds:
+    CRITICAL: 70
+    HIGH:     40
+    MEDIUM:   20
+    LOW:      0             # everything below MEDIUM
+
+# ------------------------------------------------------------------
+# SELF-TRAINING / FEEDBACK LOOP CONFIGURATION
+# ------------------------------------------------------------------
+
+feedback:
+  false_positive_threshold: 3        # rule fires this many FPs before threshold is widened
+  threshold_widening_step: 30        # seconds added to time_window_seconds on FP trigger
+  max_threshold_seconds: 3600        # cap: never widen a window beyond 1 hour
+  min_feedback_for_retrain: 5        # minimum labeled samples needed before retraining ML
+
+# ------------------------------------------------------------------
+# SLIDING WINDOW CONFIGURATION
+# ------------------------------------------------------------------
+
+window:
+  in_memory_seconds: 1800            # 30-minute hot window kept in memory
+  max_events_in_memory: 5000         # hard cap to prevent OOM
+
+# ------------------------------------------------------------------
+# AUDIT FORWARDING
+# ------------------------------------------------------------------
+
+audit:
+  endpoint: "http://localhost:8006/audit/events"   # Person 6's service — update on integration
+  timeout_seconds: 5
+  retry_on_failure: true
+  max_retries: 3
