@@ -31,3 +31,8 @@ app.include_router(report_router)
 @app.get("/")
 def root():
     return {"status": "Audit service running"}
+
+
+@app.get("/health")
+def health():
+    return {"status": "healthy", "service": "audit-service"}
