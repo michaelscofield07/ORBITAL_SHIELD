@@ -10,7 +10,7 @@ rules:
     \ of a coordinated or compromised session spanning multiple subsystems.\n"
   conditions:
     match_key: session_id
-    time_window_seconds: 330
+    time_window_seconds: 390
     min_sources: 2
     min_events: 2
     required_sources: []
@@ -78,7 +78,7 @@ rules:
     \ review.\n"
   conditions:
     match_key: satellite_id
-    time_window_seconds: 330
+    time_window_seconds: 390
     min_sources: 2
     min_events: 2
     required_sources: []
