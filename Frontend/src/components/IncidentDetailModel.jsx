@@ -96,6 +96,12 @@ function IncidentDetailModal({ incident, onClose }) {
           </span>
           <div className="flex gap-2">
             <button
+              onClick={() => window.open(`http://127.0.0.1:8001/audit/${incident.id}/report`, "_blank")}
+              className="text-xs font-mono tracking-widest text-mist border hairline px-4 py-2 rounded-sm hover:bg-mist/5 transition-colors"
+            >
+              DOWNLOAD REPORT
+            </button>
+            <button
               onClick={() => handleReview("INVESTIGATING")}
               disabled={loading}
               className="text-xs font-mono tracking-widest text-mist border hairline px-4 py-2 rounded-sm hover:bg-mist/5 transition-colors disabled:opacity-50"
