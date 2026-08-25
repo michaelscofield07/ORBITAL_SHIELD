@@ -6,12 +6,17 @@ from typing import Optional
 from dotenv import load_dotenv
 
 # Base project directory (downlink-engine root)
+# downlink-engine root is two levels up from this file (app/core/config.py)
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
-# Load .env file from base directory
-env_path = BASE_DIR / ".env"
-if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
+# Also try the repo root (.env lives there in integration-final)
+_REPO_ENV = BASE_DIR.parent / ".env"
+
+# Load .env — prefer repo-root .env (integration-final layout), fall back to module-local
+for _env_candidate in [_REPO_ENV, BASE_DIR / ".env"]:
+    if _env_candidate.exists():
+        load_dotenv(dotenv_path=_env_candidate, override=False)
+        break
 else:
     load_dotenv()
 
@@ -47,9 +52,13 @@ class Settings:
     # Feature extraction sliding window size
     SEQUENCE_WINDOW_SIZE: int = int(os.getenv("SEQUENCE_WINDOW_SIZE", "100"))
 
+    # Downstream service URLs (consumed by downlink routes that forward events)
+    MLBRAIN_URL: str = os.getenv("MLBRAIN_URL", "http://localhost:8005/events/ingest")
+    AUDIT_URL: str = os.getenv("AUDIT_URL", "http://localhost:8006/audit/events")
+
     # Server settings
     HOST: str = os.getenv("HOST", "0.0.0.0")
-    PORT: int = int(os.getenv("PORT", "8000"))
+    PORT: int = int(os.getenv("DOWNLINK_PORT", os.getenv("PORT", "8001")))  # B1: was 8000
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
 

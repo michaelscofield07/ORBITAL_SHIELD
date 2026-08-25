@@ -29,7 +29,18 @@ from models.schemas import (
 BASE_DIR = Path(__file__).parent
 ARTIFACTS_DIR = BASE_DIR / "artifacts"
 DEFAULT_PUBKEY = ARTIFACTS_DIR / "cosign.pub"
-ML_BRAIN_URL = os.environ.get("ML_BRAIN_URL", "http://localhost:8005/events/ingest")
+
+# Load shared .env from repo root
+from dotenv import load_dotenv
+_REPO_ENV = Path(__file__).resolve().parent.parent / ".env"
+if _REPO_ENV.exists():
+    load_dotenv(dotenv_path=_REPO_ENV, override=False)
+else:
+    load_dotenv()
+
+ML_BRAIN_URL = os.environ.get("MLBRAIN_URL", os.environ.get("ML_BRAIN_URL", "http://localhost:8005/events/ingest"))
+AUDIT_URL = os.environ.get("AUDIT_URL", "http://localhost:8006/audit/events")
+_FIRMWARE_PORT = int(os.environ.get("FIRMWARE_PORT", "8003"))
 
 app = FastAPI(
     title="ORBITAL SHIELD — Firmware Verification (Module 3)",
@@ -58,11 +69,12 @@ def get_health() -> Dict[str, Any]:
     return {
         "module": "firmware_verification",
         "status": "HEALTHY",
-        "port": 8003,
+        "port": _FIRMWARE_PORT,
         "cosign_installed": cosign_installed,
         "cosign_binary": verifier.cosign_binary or "NOT_FOUND",
         "default_public_key": str(DEFAULT_PUBKEY.resolve()) if DEFAULT_PUBKEY.exists() else "MISSING",
-        "ml_brain_endpoint": ML_BRAIN_URL
+        "ml_brain_endpoint": ML_BRAIN_URL,
+        "audit_endpoint": AUDIT_URL
     }
 
 
@@ -123,12 +135,26 @@ async def verify_and_forward_endpoint(request: FirmwareVerificationRequest) -> V
     except Exception as e:
         brain_resp_data = {"error": f"Could not reach ML Brain: {str(e)}"}
 
+    # B11 fix: also forward to audit service (fire-and-forget, non-blocking)
+    import asyncio
+    asyncio.ensure_future(_forward_fw_to_audit(ml_brain_event))
+
     return VerificationSummary(
         security_event=security_event,
         ml_brain_event=ml_brain_event,
         ml_brain_forwarded=forwarded,
         ml_brain_response=brain_resp_data
     )
+
+
+async def _forward_fw_to_audit(event) -> None:
+    """Fire-and-forget audit forwarding for firmware events."""
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            await client.post(AUDIT_URL, json=event.model_dump())
+    except Exception as exc:
+        import logging as _log
+        _log.getLogger("FirmwareVerifier").warning(f"Audit forward failed: {exc}")
 
 
 @app.post("/verify/sample/valid", response_model=FirmwareSecurityEvent, summary="Test Sample Valid Firmware")

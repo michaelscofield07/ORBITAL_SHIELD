@@ -19,7 +19,17 @@ except ImportError:
 
 logger = logging.getLogger("AccessSecurity.EventGenerator")
 
-ML_BRAIN_URL = os.environ.get("ML_BRAIN_URL", "http://localhost:8005/events/ingest")
+ML_BRAIN_URL = os.environ.get("MLBRAIN_URL", os.environ.get("ML_BRAIN_URL", "http://localhost:8005/events/ingest"))
+
+# Schema fix: ML Brain SeverityLevel only accepts LOW/MEDIUM/HIGH/CRITICAL.
+# access-security engine can produce INFO — map it to LOW.
+_SEVERITY_MAP = {"INFO": "LOW", "LOW": "LOW", "MEDIUM": "MEDIUM", "HIGH": "HIGH", "CRITICAL": "CRITICAL"}
+
+
+def _normalise_severity(sev) -> str:
+    """Return a severity string valid for ML Brain's SeverityLevel enum."""
+    val = sev.value if hasattr(sev, "value") else str(sev)
+    return _SEVERITY_MAP.get(val, "LOW")
 
 
 class EventGenerator:
@@ -55,7 +65,7 @@ class EventGenerator:
             source="ACCESS",
             satellite_id=sat_id,
             event_type=detection.event_type,
-            severity=detection.severity.value if hasattr(detection.severity, "value") else str(detection.severity),
+            severity=_normalise_severity(detection.severity),  # schema fix: INFO→LOW
             confidence=detection.confidence,
             description=detection.description,
             action=detection.action.value if hasattr(detection.action, "value") else str(detection.action),

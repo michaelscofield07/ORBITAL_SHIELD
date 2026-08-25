@@ -18,16 +18,18 @@ import asyncio
 import logging
 import sys
 import time
+import json
 import httpx
 import yaml
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncGenerator
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sse_starlette.sse import EventSourceResponse
 
 # ── Local modules ─────────────────────────────────────────────
 from models.schemas import (
@@ -57,6 +59,33 @@ logger = logging.getLogger("orbital.main")
 
 _start_time = time.time()
 _CONFIG_PATH = Path(__file__).parent / "config" / "rules.yaml"
+
+# ─────────────────────────────────────────────────────────────
+# SSE Broadcaster — one asyncio.Queue per connected client
+# ─────────────────────────────────────────────────────────────
+
+_sse_subscribers: set[asyncio.Queue] = set()
+
+
+def _sse_subscribe() -> asyncio.Queue:
+    q: asyncio.Queue = asyncio.Queue(maxsize=50)
+    _sse_subscribers.add(q)
+    return q
+
+
+def _sse_unsubscribe(q: asyncio.Queue) -> None:
+    _sse_subscribers.discard(q)
+
+
+async def _broadcast_sse_event(source: str, event_type: str, timestamp: str) -> None:
+    """Push a small status message to every connected SSE client."""
+    data = json.dumps({"source": source, "event_type": event_type,
+                       "timestamp": timestamp, "status": "RECEIVED"})
+    for q in list(_sse_subscribers):
+        try:
+            q.put_nowait(data)
+        except asyncio.QueueFull:
+            pass  # slow client — drop rather than block
 
 
 @asynccontextmanager
@@ -205,6 +234,14 @@ async def ingest_event(event: IncomingEvent, background_tasks: BackgroundTasks):
 
         # Forward to audit module in background (non-blocking)
         background_tasks.add_task(_forward_to_audit, incident)
+
+    # Broadcast to SSE subscribers (section 6 — additive only, does not change response)
+    background_tasks.add_task(
+        _broadcast_sse_event,
+        source=event.source.value,
+        event_type=event.event_type,
+        timestamp=event.timestamp.isoformat(),
+    )
 
     return IngestResponse(
         status="ACCEPTED",
@@ -477,6 +514,38 @@ async def root():
         "docs": "/docs",
         "design_principle": "Advisory only — zero enforcement authority."
     }
+
+
+# ────────────────────────────────────────────────────────────
+# ROUTE 10: SSE live module health stream (Section 6)
+# ────────────────────────────────────────────────────────────
+
+@app.get(
+    "/brain/stream",
+    tags=["Brain Management"],
+    summary="SSE stream — live module event notifications",
+    description="Server-Sent Events stream. Every time /events/ingest accepts an event, "
+                "a JSON message is pushed: {source, event_type, timestamp, status}. "
+                "Subscribe from the dashboard module health strip.",
+)
+async def brain_stream(request: Request):
+    q = _sse_subscribe()
+
+    async def event_generator() -> AsyncGenerator[dict, None]:
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    data = await asyncio.wait_for(q.get(), timeout=15.0)
+                    yield {"data": data}
+                except asyncio.TimeoutError:
+                    # Send a heartbeat comment so the connection stays alive
+                    yield {"comment": "heartbeat"}
+        finally:
+            _sse_unsubscribe(q)
+
+    return EventSourceResponse(event_generator())
 
 
 # ─────────────────────────────────────────────────────────────

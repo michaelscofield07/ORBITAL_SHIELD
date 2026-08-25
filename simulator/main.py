@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional, Union
 from fastapi import Body, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, Field
 import uvicorn
+import os
+from pathlib import Path
 
 from simulator.access.models import AccessAction, AccessEvent, AccessStatus
 from simulator.commands.models import CommandEvent, CommandStatus, CommandType
@@ -322,10 +324,26 @@ def create_app(
 
     return app
 
-
 # Default ASGI application instance for uvicorn
-app = create_app()
+_built_app = create_app()
+
+# Add /health endpoint to the built app for two-machine smoke-testing
+@_built_app.get("/health", tags=["Health"], summary="Simulator health check")
+def simulator_health():
+    _sim_port = int(os.getenv("SIMULATOR_PORT", "8000"))
+    return {"module": "simulator", "status": "HEALTHY", "port": _sim_port}
+
+app = _built_app
 
 if __name__ == "__main__":
-    print("Starting ORBITAL_SHIELD Satellite Simulator Gateway on http://127.0.0.1:8000 ...")
-    uvicorn.run("simulator.main:app", host="127.0.0.1", port=8000, reload=True)
+    # Load shared .env (integration-final repo root, one level above simulator/)
+    _env = Path(__file__).resolve().parent.parent / ".env"
+    if _env.exists():
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(dotenv_path=_env, override=False)
+        except ImportError:
+            pass
+    _port = int(os.getenv("SIMULATOR_PORT", "8000"))
+    print(f"Starting ORBITAL_SHIELD Satellite Simulator Gateway on http://0.0.0.0:{_port} ...")
+    uvicorn.run("simulator.main:app", host="0.0.0.0", port=_port, reload=True)  # B9: was 127.0.0.1

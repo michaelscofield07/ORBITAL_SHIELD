@@ -2,8 +2,8 @@
 ORBITAL SHIELD — Access Security Service (Module 4)
 FastAPI service exposing ground station / operator access security detection API endpoints.
 
-Default Port: 8001 (or 8004)
-Swagger UI: http://localhost:8001/docs
+Default Port: 8002
+Swagger UI: http://localhost:8002/docs
 """
 
 from __future__ import annotations
@@ -25,10 +25,21 @@ from models.schemas import (
     SecurityEvent,
 )
 
+from dotenv import load_dotenv
+
+# Load shared .env from repo root (integration-final layout)
+_REPO_ENV = Path(__file__).resolve().parent.parent / ".env"
+if _REPO_ENV.exists():
+    load_dotenv(dotenv_path=_REPO_ENV, override=False)
+else:
+    load_dotenv()
+
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
 MOCK_DATA_PATH = DATA_DIR / "mock_access_logs.json"
-ML_BRAIN_URL = os.environ.get("ML_BRAIN_URL", "http://localhost:8005/events/ingest")
+ML_BRAIN_URL = os.environ.get("MLBRAIN_URL", os.environ.get("ML_BRAIN_URL", "http://localhost:8005/events/ingest"))
+AUDIT_URL = os.environ.get("AUDIT_URL", "http://localhost:8006/audit/events")
+_ACCESS_PORT = int(os.environ.get("ACCESS_PORT", "8002"))  # B2: was hardcoded 8001
 
 app = FastAPI(
     title="ORBITAL SHIELD — Access Security (Module 4)",
@@ -57,11 +68,12 @@ def get_health() -> Dict[str, Any]:
     return {
         "module": "access_security",
         "status": "HEALTHY",
-        "port": 8001,
+        "port": _ACCESS_PORT,
         "mock_dataset_available": MOCK_DATA_PATH.exists(),
         "trusted_devices_count": len(engine.trusted_devices),
         "failed_attempts_threshold": engine.failed_attempts_threshold,
         "ml_brain_endpoint": ML_BRAIN_URL,
+        "audit_endpoint": AUDIT_URL,
         "cached_events_count": len(event_history),
     }
 
@@ -98,6 +110,10 @@ async def analyze_access_endpoint(request: AccessAnalysisRequest) -> AccessAnaly
                 ml_forwarded = True
             last_ml_resp = forward_res
 
+            # B10 fix: also forward to audit service (fire-and-forget, non-blocking)
+            import asyncio
+            asyncio.ensure_future(_forward_to_audit(event))
+
     return AccessAnalysisResponse(
         analyzed_count=len(request.records),
         suspicious_count=suspicious_count,
@@ -105,6 +121,18 @@ async def analyze_access_endpoint(request: AccessAnalysisRequest) -> AccessAnaly
         ml_brain_forwarded=ml_forwarded,
         ml_brain_response=last_ml_resp,
     )
+
+
+async def _forward_to_audit(event: SecurityEvent) -> None:
+    """Fire-and-forget forwarding to audit service. Mirrors uplink_P4's pattern."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            await client.post(AUDIT_URL, json=event.model_dump())
+    except Exception as exc:
+        import logging as _log
+        _log.getLogger("AccessSecurity").warning(f"Audit forward failed: {exc}")
+
 
 
 @app.get("/access/events", response_model=List[SecurityEvent], summary="Get Generated Security Events")
@@ -136,8 +164,8 @@ async def run_mock_dataset_endpoint() -> AccessAnalysisResponse:
 
 
 def run():
-    """Start uvicorn server on port 8001."""
-    uvicorn.run("main:app", host="0.0.0.0", port=8001, reload=True)
+    """Start uvicorn server on env-configured port (default 8002)."""
+    uvicorn.run("main:app", host="0.0.0.0", port=_ACCESS_PORT, reload=True)
 
 
 if __name__ == "__main__":

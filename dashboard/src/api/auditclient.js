@@ -1,4 +1,5 @@
-const API_BASE = "http://127.0.0.1:8001";
+// B4 fix: read from Vite env var; default to port 8006 (was 8001)
+const API_BASE = import.meta.env.VITE_AUDIT_URL || "http://127.0.0.1:8006";
 
 export async function fetchEvents() {
   const response = await fetch(`${API_BASE}/audit/events`);

@@ -2,7 +2,7 @@
 Orbital Shield - Uplink Command Security Engine Microservice.
 FastAPI service exposing validation, execution dispatch, security audit history, and dynamic policies.
 Integrates with:
-- Person 1: Flight Software Simulator (http://localhost:8001/commands/execute)
+- Person 1: Flight Software Simulator (http://localhost:8000/commands/execute)
 - Person 5: ML Correlation Engine (http://localhost:8005/events/ingest)
 - Person 6: Audit Service (http://localhost:8006/audit/events)
 """
@@ -41,10 +41,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger("uplink_api")
 
-# External Service Endpoints
-PERSON_1_SIMULATOR_URL = os.getenv("PERSON_1_SIMULATOR_URL", os.getenv("DOWNSTREAM_TRANSMITTER_URL", "http://localhost:8001/commands/execute"))
-PERSON_5_ML_CORRELATION_URL = os.getenv("PERSON_5_ML_CORRELATION_URL", os.getenv("ML_CORRELATION_URL", "http://localhost:8005/events/ingest"))
-PERSON_6_AUDIT_URL = os.getenv("PERSON_6_AUDIT_URL", os.getenv("AUDIT_SERVICE_URL", "http://localhost:8006/audit/events"))
+# External Service Endpoints — all read from env, no hardcoded hosts
+PERSON_1_SIMULATOR_URL = os.getenv(
+    "PERSON_1_SIMULATOR_URL",
+    os.getenv("SIMULATOR_URL", "http://localhost:8000") + "/commands/execute"
+)  # B6: default was 8001, corrected to 8000
+PERSON_5_ML_CORRELATION_URL = os.getenv(
+    "PERSON_5_ML_CORRELATION_URL",
+    os.getenv("MLBRAIN_URL", "http://localhost:8005/events/ingest")
+)
+PERSON_6_AUDIT_URL = os.getenv(
+    "PERSON_6_AUDIT_URL",
+    os.getenv("AUDIT_URL", "http://localhost:8006/audit/events")
+)
+
+# B8: Action mapping — translate Uplink CommandAction to ML Brain ActionType
+# ML Brain IncomingEvent.action must be one of: REVIEW / MONITOR / HUMAN_REVIEW / ALERT / LOG
+_ACTION_MAP: dict[str, str] = {"BLOCK": "ALERT", "HOLD": "HUMAN_REVIEW", "ALLOW": "LOG"}
+
+
+def to_ml_brain_action(action: "CommandAction") -> str:
+    """Map Uplink-internal CommandAction to the nearest valid ML Brain ActionType string."""
+    val = action.value if hasattr(action, "value") else str(action)
+    return _ACTION_MAP.get(val, "ALERT")
 
 SERVICE_START_TIME = datetime.now(timezone.utc)
 
@@ -58,20 +77,26 @@ async def dispatch_security_event_to_external_services(event: SecurityEvent) -> 
     - Person 5: ML Correlation Engine (http://localhost:8005/events/ingest)
     - Person 6: Audit Service (http://localhost:8006/audit/events)
     Includes timeouts and fallback error handling so the service stays functional standalone.
+    The payload sent to ML Brain has `action` mapped via _ACTION_MAP (B8 fix) so it matches
+    ActionType enum. The payload sent to audit service retains the original CommandAction value.
     """
-    payload = event.model_dump(mode="json")
+    # B8: build separate payloads — ML Brain needs ActionType, audit keeps CommandAction
+    base_dict = event.model_dump(mode="json")
 
-    async def send_to_service(url: str, service_name: str) -> None:
+    ml_payload = {**base_dict, "action": to_ml_brain_action(event.action)}
+    audit_payload = base_dict  # audit service accepts any string action value
+
+    async def send_to_service(url: str, service_name: str, json_body: dict) -> None:
         try:
             async with httpx.AsyncClient(timeout=1.0) as client:
-                res = await client.post(url, json=payload)
+                res = await client.post(url, json=json_body)
                 logger.info(f"Dispatched security event '{event.event_id}' to {service_name} ({url}) -> Status {res.status_code}")
         except Exception as exc:
             logger.warning(f"External event dispatch to {service_name} ({url}) failed: {exc}. Continuing in standalone mode.")
 
     await asyncio.gather(
-        send_to_service(PERSON_5_ML_CORRELATION_URL, "ML Correlation (Person 5)"),
-        send_to_service(PERSON_6_AUDIT_URL, "Audit Service (Person 6)"),
+        send_to_service(PERSON_5_ML_CORRELATION_URL, "ML Correlation (Person 5)", ml_payload),
+        send_to_service(PERSON_6_AUDIT_URL, "Audit Service (Person 6)", audit_payload),
         return_exceptions=True
     )
 
@@ -379,3 +404,14 @@ async def query_security_history(
         event_type=event_type,
         limit=limit
     )
+
+
+if __name__ == "__main__":  # B7: was missing entirely
+    import uvicorn
+    from dotenv import load_dotenv
+    from pathlib import Path
+    _env = Path(__file__).resolve().parent.parent / ".env"
+    if _env.exists():
+        load_dotenv(dotenv_path=_env, override=False)
+    _port = int(os.getenv("UPLINK_PORT", "8004"))
+    uvicorn.run("main:app", host="0.0.0.0", port=_port, reload=True)
