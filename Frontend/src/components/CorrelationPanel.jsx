@@ -2,7 +2,7 @@ import { useState } from "react";
 
 // Mock correlation incident — replace with real data from Person 5's API later
 const MOCK_INCIDENT = {
-  id: "INC-001",
+  id: "EVT-100",
   severity: "CRITICAL",
   description: "Possible compromised operator session affecting satellite SAT-EO-01",
   relatedEvents: ["Login", "Command", "Telemetry"],

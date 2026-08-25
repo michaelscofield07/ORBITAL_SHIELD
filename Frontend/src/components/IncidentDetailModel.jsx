@@ -1,4 +1,18 @@
+import { useState } from "react";
+
+async function submitReview(eventId, status, reviewedBy = "admin_user") {
+  const response = await fetch(
+    `http://127.0.0.1:8001/audit/${eventId}/review?status=${status}&reviewed_by=${reviewedBy}`,
+    { method: "POST" }
+  );
+  if (!response.ok) throw new Error("Review update failed");
+  return response.json();
+}
+
 function IncidentDetailModal({ incident, onClose }) {
+  const [status, setStatus] = useState("OPEN");
+  const [loading, setLoading] = useState(false);
+
   if (!incident) return null;
 
   const timeline = [
@@ -8,25 +22,39 @@ function IncidentDetailModal({ incident, onClose }) {
     { label: "Correlation", detail: `Confidence ${Math.round(incident.confidence * 100)}%`, source: "ML_BRAIN" },
   ];
 
+  const handleReview = async (newStatus) => {
+    setLoading(true);
+    try {
+      await submitReview(incident.id, newStatus);
+      setStatus(newStatus);
+    } catch (err) {
+      console.error(err);
+      alert("Failed to update review status");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div
-      className="fixed inset-0 bg-void/60 backdrop-blur-md flex items-center justify-center z-50 px-6 transition-all"
+      className="fixed inset-0 bg-void/80 flex items-center justify-center z-50 px-6"
       onClick={onClose}
     >
       <div
-        className="bg-panel/60 backdrop-blur-2xl border hairline rounded-md max-w-2xl w-full p-6 shadow-[0_0_40px_rgba(232,84,75,0.1)] relative overflow-hidden"
+        className="bg-panel border hairline rounded-sm max-w-2xl w-full p-6"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="absolute top-0 right-0 w-64 h-64 bg-alertRed/10 rounded-full blur-[80px] -z-10 mix-blend-screen pointer-events-none" />
-        
         <div className="flex items-start justify-between mb-6">
           <div>
-            <div className="flex items-center gap-2 mb-1 glow-text-alert">
-              <span className="w-2 h-2 rounded-full bg-alertRed shadow-[0_0_8px_#E8544B]" />
-              <span className="text-xs font-mono tracking-widest text-alertRed font-bold">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="w-2 h-2 rounded-full bg-alertRed" />
+              <span className="text-xs font-mono tracking-widest text-alertRed">
                 {incident.severity}
               </span>
               <span className="text-xs font-mono text-mist/40">{incident.id}</span>
+              <span className="text-xs font-mono text-mist/40 ml-2">
+                [{status}]
+              </span>
             </div>
             <h2 className="text-mist font-display text-lg">
               {incident.description}
@@ -44,7 +72,7 @@ function IncidentDetailModal({ incident, onClose }) {
           {timeline.map((step, i) => (
             <div key={step.label} className="flex items-start gap-4">
               <div className="flex flex-col items-center">
-                <span className="w-2 h-2 rounded-full bg-signal shadow-[0_0_5px_#4FD1C5]" />
+                <span className="w-2 h-2 rounded-full bg-signal" />
                 {i < timeline.length - 1 && (
                   <span className="w-px h-8 bg-mist/20 mt-1" />
                 )}
@@ -64,13 +92,21 @@ function IncidentDetailModal({ incident, onClose }) {
 
         <div className="flex items-center justify-between pt-4 border-t hairline">
           <span className="text-xs font-mono text-mist/50">
-            RECOMMENDED ACTION: {incident.relatedEvents ? "HUMAN_REVIEW" : "MONITOR"}
+            RECOMMENDED ACTION: HUMAN_REVIEW
           </span>
           <div className="flex gap-2">
-            <button className="text-xs font-mono tracking-widest text-mist border hairline px-4 py-2 rounded-sm hover:bg-mist/5 transition-colors">
+            <button
+              onClick={() => handleReview("INVESTIGATING")}
+              disabled={loading}
+              className="text-xs font-mono tracking-widest text-mist border hairline px-4 py-2 rounded-sm hover:bg-mist/5 transition-colors disabled:opacity-50"
+            >
               MARK INVESTIGATING
             </button>
-            <button className="text-xs font-mono tracking-widest text-void bg-signal px-4 py-2 rounded-sm hover:opacity-90 transition-opacity">
+            <button
+              onClick={() => handleReview("RESOLVED")}
+              disabled={loading}
+              className="text-xs font-mono tracking-widest text-void bg-signal px-4 py-2 rounded-sm hover:opacity-90 transition-opacity disabled:opacity-50"
+            >
               MARK RESOLVED
             </button>
           </div>
