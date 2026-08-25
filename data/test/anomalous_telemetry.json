@@ -1,0 +1,176 @@
+{
+  "thermal_spike": [
+    {
+      "timestamp": "2026-08-25T04:12:33Z",
+      "satellite_id": "SAT-EO-01",
+      "sequence_number": 2001,
+      "temperature": 24.0,
+      "battery": 87.8,
+      "signal_strength": -70.4,
+      "latitude": 11.2,
+      "longitude": 77.1,
+      "packet_hash": "4e37c29ead09e881d39d82d23cd797fce501a01c3c7fc9b6ccaa4d5337764844",
+      "signature": null
+    },
+    {
+      "timestamp": "2026-08-25T04:12:39Z",
+      "satellite_id": "SAT-EO-01",
+      "sequence_number": 2002,
+      "temperature": 82.5,
+      "battery": 87.4,
+      "signal_strength": -71.2,
+      "latitude": 11.25,
+      "longitude": 77.15,
+      "packet_hash": "787bc82fdb7517d10d1217acbf50f418e50d23e20a113869593ea9ff6b9c263d",
+      "signature": null
+    }
+  ],
+  "signal_drop": [
+    {
+      "timestamp": "2026-08-25T04:12:33Z",
+      "satellite_id": "SAT-EO-01",
+      "sequence_number": 3001,
+      "temperature": 23.0,
+      "battery": 86.0,
+      "signal_strength": -70.0,
+      "latitude": 12.0,
+      "longitude": 77.0,
+      "packet_hash": "2052867e0378ebf8d2b30a6adac9f78e040e3834b5049813cc2d8dea32ea5f7d",
+      "signature": null
+    },
+    {
+      "timestamp": "2026-08-25T04:12:39Z",
+      "satellite_id": "SAT-EO-01",
+      "sequence_number": 3002,
+      "temperature": 23.1,
+      "battery": 85.9,
+      "signal_strength": -122.5,
+      "latitude": 12.05,
+      "longitude": 77.05,
+      "packet_hash": "4f1b8f4d9398a43fa32be0fc465b6e6be3d690ff9beec8d7350729fe185032ee",
+      "signature": null
+    }
+  ],
+  "burst_flood": [
+    {
+      "timestamp": "2026-08-25T04:12:33Z",
+      "satellite_id": "SAT-EO-01",
+      "sequence_number": 4001,
+      "temperature": 24.0,
+      "battery": 85.0,
+      "signal_strength": -70.0,
+      "latitude": 13.0,
+      "longitude": 78.0,
+      "packet_hash": "981da7386e4ee7ac85171b9c6beb1755bb1d914a89a200396c17d373f727a8dd",
+      "signature": null
+    },
+    {
+      "timestamp": "2026-08-25T04:12:33Z",
+      "satellite_id": "SAT-EO-01",
+      "sequence_number": 4002,
+      "temperature": 24.0,
+      "battery": 85.0,
+      "signal_strength": -70.0,
+      "latitude": 13.0,
+      "longitude": 78.0,
+      "packet_hash": "9ed9aa55eae7c8c7c062bf6c561e2f9efb36a0f6bdea28ade2e66bac736ccc1a",
+      "signature": null
+    },
+    {
+      "timestamp": "2026-08-25T04:12:33Z",
+      "satellite_id": "SAT-EO-01",
+      "sequence_number": 4003,
+      "temperature": 24.0,
+      "battery": 85.0,
+      "signal_strength": -70.0,
+      "latitude": 13.0,
+      "longitude": 78.0,
+      "packet_hash": "9fddd2757a82b15643d854a4253882141ac2f65f5e0d50db43929cc1036288f2",
+      "signature": null
+    },
+    {
+      "timestamp": "2026-08-25T04:12:34Z",
+      "satellite_id": "SAT-EO-01",
+      "sequence_number": 4004,
+      "temperature": 24.0,
+      "battery": 85.0,
+      "signal_strength": -70.0,
+      "latitude": 13.0,
+      "longitude": 78.0,
+      "packet_hash": "14e0be65272e9a5a7fd0943d60451546a4013e9e8544e289eec55744241418e9",
+      "signature": null
+    },
+    {
+      "timestamp": "2026-08-25T04:12:34Z",
+      "satellite_id": "SAT-EO-01",
+      "sequence_number": 4005,
+      "temperature": 24.0,
+      "battery": 85.0,
+      "signal_strength": -70.0,
+      "latitude": 13.0,
+      "longitude": 78.0,
+      "packet_hash": "960b97aafa99cd03ae976a09711b442714a54b8bd7b751aa5f8d0cf2cb1ffe0f",
+      "signature": null
+    },
+    {
+      "timestamp": "2026-08-25T04:12:34Z",
+      "satellite_id": "SAT-EO-01",
+      "sequence_number": 4006,
+      "temperature": 24.0,
+      "battery": 85.0,
+      "signal_strength": -70.0,
+      "latitude": 13.0,
+      "longitude": 78.0,
+      "packet_hash": "c5cde03a60c09c2d35102527325a5f6bb87541b1e2d9eec4b6ecab0d2e90e9c0",
+      "signature": null
+    },
+    {
+      "timestamp": "2026-08-25T04:12:34Z",
+      "satellite_id": "SAT-EO-01",
+      "sequence_number": 4007,
+      "temperature": 24.0,
+      "battery": 85.0,
+      "signal_strength": -70.0,
+      "latitude": 13.0,
+      "longitude": 78.0,
+      "packet_hash": "9f5e46f31f2e38333481707567b7bd4532f0fb2808efed50547b4fdbc860b5fb",
+      "signature": null
+    },
+    {
+      "timestamp": "2026-08-25T04:12:34Z",
+      "satellite_id": "SAT-EO-01",
+      "sequence_number": 4008,
+      "temperature": 24.0,
+      "battery": 85.0,
+      "signal_strength": -70.0,
+      "latitude": 13.0,
+      "longitude": 78.0,
+      "packet_hash": "87cd8752ac841dbfb6a67dcb8800daf7354289487af2a993f02ad406f9e2ebe4",
+      "signature": null
+    },
+    {
+      "timestamp": "2026-08-25T04:12:35Z",
+      "satellite_id": "SAT-EO-01",
+      "sequence_number": 4009,
+      "temperature": 24.0,
+      "battery": 85.0,
+      "signal_strength": -70.0,
+      "latitude": 13.0,
+      "longitude": 78.0,
+      "packet_hash": "d8c9c5aac97055938ee4169e2e1f48fdd15bcaa7cebd83821041aadf1c8f07a5",
+      "signature": null
+    },
+    {
+      "timestamp": "2026-08-25T04:12:35Z",
+      "satellite_id": "SAT-EO-01",
+      "sequence_number": 4010,
+      "temperature": 24.0,
+      "battery": 85.0,
+      "signal_strength": -70.0,
+      "latitude": 13.0,
+      "longitude": 78.0,
+      "packet_hash": "484e5436fcccc76cd2f2c9445bf000a9f1586645a235d7b05f9dac31c5b9d665",
+      "signature": null
+    }
+  ]
+}
