@@ -14,12 +14,18 @@ function SecurityEventsList() {
   const [error, setError] = useState(false);
 
   useEffect(() => {
-    fetchEvents()
-      .then(setEvents)
-      .catch((err) => {
-        console.error(err);
-        setError(true);
-      });
+    const loadEvents = () => {
+      fetchEvents()
+        .then(setEvents)
+        .catch((err) => {
+          console.error(err);
+          setError(true);
+        });
+    };
+    
+    loadEvents();
+    const interval = setInterval(loadEvents, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   if (error) {

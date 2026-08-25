@@ -13,21 +13,27 @@ function ThreatSeverityPanel() {
   const [error, setError] = useState(false);
 
   useEffect(() => {
-    fetchEvents()
-      .then((records) => {
-        const newCounts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
-        records.forEach((rec) => {
-          const sev = rec.event_json.severity;
-          if (newCounts[sev] !== undefined) {
-            newCounts[sev]++;
-          }
+    const loadSeverities = () => {
+      fetchEvents()
+        .then((records) => {
+          const newCounts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
+          records.forEach((rec) => {
+            const sev = rec.event_json.severity;
+            if (newCounts[sev] !== undefined) {
+              newCounts[sev]++;
+            }
+          });
+          setCounts(newCounts);
+        })
+        .catch((err) => {
+          console.error(err);
+          setError(true);
         });
-        setCounts(newCounts);
-      })
-      .catch((err) => {
-        console.error(err);
-        setError(true);
-      });
+    };
+
+    loadSeverities();
+    const interval = setInterval(loadSeverities, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   if (error) {

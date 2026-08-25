@@ -6,22 +6,28 @@ function CorrelationPanel({ onInvestigate }) {
   const [error, setError] = useState(false);
 
   useEffect(() => {
-    fetchEvents()
-      .then((records) => {
-        const mlEvents = records
-          .map((r) => ({ ...r.event_json, db_id: r.event_id }))
-          .filter((e) => e.source === "ML_BRAIN");
-        
-        if (mlEvents.length > 0) {
-          setIncident(mlEvents[0]); // most recent
-        } else {
-          setIncident(null);
-        }
-      })
-      .catch((err) => {
-        console.error(err);
-        setError(true);
-      });
+    const loadIncident = () => {
+      fetchEvents()
+        .then((records) => {
+          const mlEvents = records
+            .map((r) => ({ ...r.event_json, db_id: r.event_id }))
+            .filter((e) => e.source === "ML_BRAIN");
+          
+          if (mlEvents.length > 0) {
+            setIncident(mlEvents[0]); // most recent
+          } else {
+            setIncident(null);
+          }
+        })
+        .catch((err) => {
+          console.error(err);
+          setError(true);
+        });
+    };
+
+    loadIncident();
+    const interval = setInterval(loadIncident, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   if (error) {

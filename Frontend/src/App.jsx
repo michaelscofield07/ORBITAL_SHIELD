@@ -1,15 +1,41 @@
-import { useState } from "react";
-import ThreatSeverityPanel from "./components/threatseveritypanel";
-import SecurityEventsList from "./components/securityeventlist";
-import LiveTelemetryChart from "./components/Livetelemetrychart";
+import { useState, useEffect } from "react";
+import ThreatSeverityPanel from "./components/ThreatSeverityPanel";
+import SecurityEventsList from "./components/SecurityEventsList";
+import LiveTelemetryChart from "./components/LiveTelemetryChart";
 import CorrelationPanel from "./components/CorrelationPanel";
-import IncidentDetailModal from "./components/incidentdetailmodel";
+import IncidentDetailModal from "./components/IncidentDetailModal";
+import { fetchEvents } from "./api/auditclient";
 import ScenarioControl from "./pages/ScenarioControl";
 import "./styles/index.css";
 
 function App() {
   const [selectedIncident, setSelectedIncident] = useState(null);
   const [activeTab, setActiveTab] = useState("SOC DASHBOARD");
+  
+  const [threats, setThreats] = useState("00");
+  const [incidents, setIncidents] = useState("00");
+
+  useEffect(() => {
+    const updateStats = () => {
+      fetchEvents()
+        .then((records) => {
+          let tCount = 0;
+          let iCount = 0;
+          records.forEach((rec) => {
+            const ev = rec.event_json;
+            if (ev.severity === "HIGH" || ev.severity === "CRITICAL") tCount++;
+            if (ev.source === "ML_BRAIN") iCount++;
+          });
+          setThreats(tCount.toString().padStart(2, "0"));
+          setIncidents(iCount.toString().padStart(2, "0"));
+        })
+        .catch(console.error);
+    };
+
+    updateStats();
+    const interval = setInterval(updateStats, 5000);
+    return () => clearInterval(interval);
+  }, []);
 
   return (
     <div className="min-h-screen bg-void text-mist font-body flex flex-col">
@@ -52,8 +78,8 @@ function App() {
             <section className="grid grid-cols-4 border-b hairline bg-panel/10 backdrop-blur-sm">
               {[
                 { label: "SATELLITES", value: "24" },
-                { label: "THREATS", value: "07" },
-                { label: "INCIDENTS", value: "03" },
+                { label: "THREATS", value: threats },
+                { label: "INCIDENTS", value: incidents },
                 { label: "COMPLIANCE", value: "94%" },
               ].map((stat) => (
                 <div
