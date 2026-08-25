@@ -8,9 +8,22 @@ Computes the hash chain link and stores it.
 from fastapi import APIRouter, HTTPException
 from schemas import SecurityEvent
 from hash_chain import compute_record_hash
-from storage import get_last_hash, save_record
+from storage import get_last_hash, save_record, get_all_records
+import json
 
 router = APIRouter()
+
+@router.get("/audit/events")
+def list_events():
+    records = get_all_records()
+    # Parse event_json so frontend gets a clean object, and return in descending order
+    return [
+        {
+            **rec,
+            "event_json": json.loads(rec["event_json"])
+        }
+        for rec in reversed(records)
+    ]
 
 
 @router.post("/audit/events")

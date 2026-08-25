@@ -1,16 +1,50 @@
-const SEVERITY_LEVELS = [
-  { label: "CRITICAL", count: 2, color: "#E8544B" },
-  { label: "HIGH", count: 3, color: "#E8544B" },
-  { label: "MEDIUM", count: 2, color: "#E8A33D" },
-  { label: "LOW", count: 5, color: "#4FD1C5" },
-];
+import { useState, useEffect } from "react";
+import { fetchEvents } from "../api/auditclient";
+
+const SEVERITY_COLORS = {
+  CRITICAL: "#E8544B",
+  HIGH: "#E8544B",
+  MEDIUM: "#E8A33D",
+  LOW: "#4FD1C5",
+};
 
 function ThreatSeverityPanel() {
-  const maxCount = Math.max(...SEVERITY_LEVELS.map((s) => s.count));
+  const [counts, setCounts] = useState({ CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 });
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    fetchEvents()
+      .then((records) => {
+        const newCounts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
+        records.forEach((rec) => {
+          const sev = rec.event_json.severity;
+          if (newCounts[sev] !== undefined) {
+            newCounts[sev]++;
+          }
+        });
+        setCounts(newCounts);
+      })
+      .catch((err) => {
+        console.error(err);
+        setError(true);
+      });
+  }, []);
+
+  if (error) {
+    return <div className="text-mist/50 text-xs font-mono py-2">[ unable to load severities ]</div>;
+  }
+
+  const levels = ["CRITICAL", "HIGH", "MEDIUM", "LOW"].map((label) => ({
+    label,
+    count: counts[label],
+    color: SEVERITY_COLORS[label],
+  }));
+
+  const maxCount = Math.max(...levels.map((s) => s.count), 1);
 
   return (
     <div className="flex flex-col gap-3">
-      {SEVERITY_LEVELS.map((level) => (
+      {levels.map((level) => (
         <div key={level.label} className="flex items-center gap-3 group">
           <span className="text-xs font-mono text-mist/60 w-16 group-hover:text-mist transition-colors">
             {level.label}

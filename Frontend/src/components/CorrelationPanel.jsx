@@ -1,16 +1,32 @@
-import { useState } from "react";
-
-// Mock correlation incident — replace with real data from Person 5's API later
-const MOCK_INCIDENT = {
-  id: "EVT-100",
-  severity: "CRITICAL",
-  description: "Possible compromised operator session affecting satellite SAT-EO-01",
-  relatedEvents: ["Login", "Command", "Telemetry"],
-  confidence: 0.91,
-};
+import { useState, useEffect } from "react";
+import { fetchEvents } from "../api/auditclient";
 
 function CorrelationPanel({ onInvestigate }) {
-  const [incident] = useState(MOCK_INCIDENT);
+  const [incident, setIncident] = useState(null);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    fetchEvents()
+      .then((records) => {
+        const mlEvents = records
+          .map((r) => ({ ...r.event_json, db_id: r.event_id }))
+          .filter((e) => e.source === "ML_BRAIN");
+        
+        if (mlEvents.length > 0) {
+          setIncident(mlEvents[0]); // most recent
+        } else {
+          setIncident(null);
+        }
+      })
+      .catch((err) => {
+        console.error(err);
+        setError(true);
+      });
+  }, []);
+
+  if (error) {
+    return <div className="text-mist/50 text-xs font-mono py-2">[ unable to load ML correlation ]</div>;
+  }
 
   if (!incident) return null;
 
@@ -31,10 +47,10 @@ function CorrelationPanel({ onInvestigate }) {
           <p className="text-mist text-sm mb-3">{incident.description}</p>
 
           <div className="flex items-center gap-2 text-xs font-mono text-mist/50">
-            {incident.relatedEvents.map((event, i) => (
+            {incident.related_events && incident.related_events.map((event, i) => (
               <span key={event} className="flex items-center gap-2">
                 {event}
-                {i < incident.relatedEvents.length - 1 && (
+                {i < incident.related_events.length - 1 && (
                   <span className="text-mist/30">→</span>
                 )}
               </span>
@@ -47,7 +63,7 @@ function CorrelationPanel({ onInvestigate }) {
             CONFIDENCE {Math.round(incident.confidence * 100)}%
           </span>
           <button
-            onClick={() => onInvestigate?.(incident)}
+            onClick={() => onInvestigate?.({ ...incident, id: incident.db_id })}
             className="text-xs font-mono tracking-widest text-void bg-alertRed px-5 py-2.5 rounded-sm hover:opacity-90 transition-all glow-box-alert font-bold"
           >
             INVESTIGATE
