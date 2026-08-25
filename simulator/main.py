@@ -6,14 +6,19 @@ and Access Events across the P1 simulation pipeline.
 """
 
 import asyncio
+import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from fastapi import Body, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, Field
 import uvicorn
-import os
-from pathlib import Path
+
+# Ensure parent directory is in sys.path so 'simulator.xxx' imports resolve cleanly
+_parent_dir = str(Path(__file__).resolve().parent.parent)
+if _parent_dir not in sys.path:
+    sys.path.insert(0, _parent_dir)
 
 from simulator.access.models import AccessAction, AccessEvent, AccessStatus
 from simulator.commands.models import CommandEvent, CommandStatus, CommandType
