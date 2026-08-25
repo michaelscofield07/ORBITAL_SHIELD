@@ -29,5 +29,6 @@ Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$rootDir\audi
 Write-Host "Starting Dashboard UI (Port 5173)..." -ForegroundColor Green
 Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$rootDir\dashboard'; npm run dev"
 
-Write-Host "`nAll 8 services launched in separate windows!" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "All 8 services launched in separate windows!" -ForegroundColor Yellow
 Write-Host "Dashboard will be available at: http://localhost:5173" -ForegroundColor Yellow
