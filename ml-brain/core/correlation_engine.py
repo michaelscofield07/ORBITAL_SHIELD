@@ -137,7 +137,15 @@ def _evaluate_single_rule(rule: dict, new_event: dict, window_events: list[dict]
         if req not in sources_present:
             return None
 
-    # ── Step 5: Severity escalation pattern (Rule 002 style) ──
+    # ── Step 5: Required event types check ────────────────────
+    required_event_types = conditions.get("required_event_types", [])
+    if required_event_types:
+        types_present = set(e["event_type"] for e in candidates)
+        for req_t in required_event_types:
+            if req_t not in types_present:
+                return None
+
+    # ── Step 6: Severity escalation pattern (Rule 002 style) ──
     if severity_pat:
         if not _check_severity_pattern(candidates, severity_pat):
             return None

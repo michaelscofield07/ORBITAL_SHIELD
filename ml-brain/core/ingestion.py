@@ -122,12 +122,13 @@ def init_window(window_seconds: int = 1800, max_events: int = 5000) -> SlidingWi
 
 def ingest_event(event: IncomingEvent) -> dict:
     """
-    Validate (Pydantic already did this), store to DB, add to sliding window.
-    Returns the serialised dict for downstream correlation.
+    Validate, clean, normalize, store to DB, add to sliding window.
+    Returns the serialised Common Event Model dict for downstream correlation.
     """
-    event_dict = _event_to_dict(event)
+    from core.normalization import normalize_security_event
+    event_dict = normalize_security_event(event)
 
-    # 1. Persist to DB (idempotent — duplicate event_id is silently ignored)
+    # 1. Persist to DB (idempotent — duplicate event_id is updated/persisted)
     db.insert_event(event_dict)
 
     # 2. Add to in-memory window
@@ -135,9 +136,9 @@ def ingest_event(event: IncomingEvent) -> dict:
     window.add(event_dict)
 
     logger.info(
-        "Ingested %s | source=%s | satellite=%s | severity=%s | confidence=%.2f",
-        event.event_id, event.source.value, event.satellite_id,
-        event.severity.value, event.confidence
+        "Ingested %s | source=%s | satellite=%s | severity=%s | confidence=%.2f | auth=%s",
+        event_dict["event_id"], event_dict["source"], event_dict["satellite_id"],
+        event_dict["severity"], event_dict["confidence"], event_dict.get("authorization_status")
     )
     return event_dict
 
@@ -191,21 +192,8 @@ def extract_features(event_dict: dict, window_events: list[dict]) -> dict:
 # ─────────────────────────────────────────────────────────────
 
 def _event_to_dict(event: IncomingEvent) -> dict:
-    return {
-        "event_id":      event.event_id,
-        "timestamp":     event.timestamp.isoformat(),
-        "source":        event.source.value,
-        "satellite_id":  event.satellite_id,
-        "event_type":    event.event_type,
-        "severity":      event.severity.value,
-        "confidence":    event.confidence,
-        "description":   event.description,
-        "action":        event.action.value,
-        "evidence":      event.evidence,
-        "related_events": event.related_events,
-        "operator_id":   event.operator_id,
-        "session_id":    event.session_id,
-    }
+    from core.normalization import normalize_security_event
+    return normalize_security_event(event)
 
 
 def _parse_ts(ts: str | datetime) -> datetime:

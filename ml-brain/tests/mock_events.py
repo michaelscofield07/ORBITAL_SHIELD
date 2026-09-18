@@ -277,7 +277,6 @@ SCENARIO_5_EVENTS = [
     },
 ]
 
-
 # --------------------------------------------------------------
 # SCENARIO 6: CCSDS Telecommand Malformation + Uplink Replay
 # Pattern: CCSDS TC header checksum failure on OBC followed by
@@ -566,6 +565,101 @@ SCENARIO_8_EVENTS = [
     },
 ]
 
+# --------------------------------------------------------------
+# SCENARIO 9: Repeat unauthorized attack targeting database access
+# Expected: RULE_006 fires -> PRIVILEGE_ESCALATION_DATA_ACCESS
+# Section 13 Historical Correlation detects identical target database
+# --------------------------------------------------------------
+SCENARIO_9_EVENTS = [
+    {
+        "event_id":     "EVT-S9-001",
+        "timestamp":    _ts(0),
+        "source":       "ACCESS",
+        "satellite_id": "SAT-NAV-04",
+        "event_type":   "PRIVILEGE_ESCALATION",
+        "severity":     "HIGH",
+        "confidence":   0.94,
+        "description":  "Rogue session elevated operator privileges to ROOT without CISO authorization ticket.",
+        "action":       "FLAG",
+        "actor":        "adversary_session_x",
+        "operator_id":  "adversary_session_x",
+        "session_id":   "SESSION-ATTACK-009",
+        "source_ip":    "198.51.100.77",
+        "resource":     "ground_control_auth_service",
+        "authorization_status": "UNAUTHORIZED",
+        "data_access": {
+            "database": "satellite_telemetry_db",
+            "tables": ["orbital_ephemeris", "ground_command_log"],
+            "records_accessed": 850,
+            "classification": "TOP_SECRET",
+        },
+        "related_events": [],
+    },
+    {
+        "event_id":     "EVT-S9-002",
+        "timestamp":    _ts(45),
+        "source":       "ACCESS",
+        "satellite_id": "SAT-NAV-04",
+        "event_type":   "UNAUTHORIZED_DATA_ACCESS",
+        "severity":     "CRITICAL",
+        "confidence":   0.98,
+        "description":  "Direct exfiltration query executed against classified telemetry ephemeris database.",
+        "action":       "QUARANTINE",
+        "actor":        "adversary_session_x",
+        "operator_id":  "adversary_session_x",
+        "session_id":   "SESSION-ATTACK-009",
+        "source_ip":    "198.51.100.77",
+        "resource":     "satellite_telemetry_db",
+        "authorization_status": "UNAUTHORIZED",
+        "data_access": {
+            "database": "satellite_telemetry_db",
+            "tables": ["orbital_ephemeris", "ground_command_log"],
+            "records_accessed": 15200,
+            "classification": "TOP_SECRET",
+        },
+        "related_events": ["EVT-S9-001"],
+    },
+]
+
+# --------------------------------------------------------------
+# SCENARIO 10: CISO Verified / Rectified Feedback Workflow
+# Expected: Activity identified as legitimate maintenance baseline (VERIFIED_RECTIFIED)
+# Prevents false positive alarm fatigue
+# --------------------------------------------------------------
+SCENARIO_10_EVENTS = [
+    {
+        "event_id":     "EVT-S10-001",
+        "timestamp":    _ts(0),
+        "source":       "CISO_NOTES",
+        "satellite_id": "SAT-COMM-09",
+        "event_type":   "CISO_ANNOTATION",
+        "severity":     "INFO",
+        "confidence":   1.0,
+        "description":  "CISO approval granted for flight controller engineer_sharma: annual thruster calibration.",
+        "action":       "LOG",
+        "actor":        "chief_flight_controller",
+        "operator_id":  "chief_flight_controller",
+        "ciso_notes":   "Pre-cleared calibration window under authorized maintenance CR-8891.",
+        "authorization_status": "AUTHORIZED",
+        "related_events": [],
+    },
+    {
+        "event_id":     "EVT-S10-002",
+        "timestamp":    _ts(30),
+        "source":       "ACCESS",
+        "satellite_id": "SAT-COMM-09",
+        "event_type":   "SUSPICIOUS_LOGIN",
+        "severity":     "MEDIUM",
+        "confidence":   0.80,
+        "description":  "Flight controller logged in from auxiliary console during maintenance window.",
+        "action":       "REVIEW",
+        "actor":        "chief_flight_controller",
+        "operator_id":  "chief_flight_controller",
+        "authorization_status": "VERIFIED_RECTIFIED",
+        "related_events": ["EVT-S10-001"],
+    },
+]
+
 ALL_SCENARIOS = {
     "1": ("cross_module_same_session",    SCENARIO_1_EVENTS, "RULE_001 -> CROSS_MODULE_ATTACK"),
     "2": ("escalating_severity",          SCENARIO_2_EVENTS, "RULE_002 -> ESCALATING_INCIDENT"),
@@ -575,6 +669,8 @@ ALL_SCENARIOS = {
     "6": ("ccsds_telecommand_malform",    SCENARIO_6_EVENTS, "RULE_005 -> CRITICAL_THREAT_CLUSTER (CCSDS TC checksum + replay)"),
     "7": ("credential_stuffing_burst",    SCENARIO_7_EVENTS, "RULE_001 -> CROSS_MODULE_ATTACK (CIC brute-force + command injection)"),
     "8": ("covert_exfiltration_chain",    SCENARIO_8_EVENTS, "RULE_002 + RULE_004 -> ESCALATING_INCIDENT / MULTI_VECTOR_ATTACK"),
+    "9": ("repeat_attack_data_access",    SCENARIO_9_EVENTS, "RULE_006 -> PRIVILEGE_ESCALATION_DATA_ACCESS + Section 13 Tracking"),
+    "10": ("ciso_verified_feedback",      SCENARIO_10_EVENTS, "Section 14 -> VERIFIED_RECTIFIED baseline suppression"),
 }
 
 
@@ -618,17 +714,24 @@ def run_in_process(events: list[dict]) -> list[dict]:
     Run correlation engine in-process without a server.
     Returns list of generated incidents.
     """
+    import uuid
+    import copy
     from db import database as db_mod
-    from core import ingestion as ing_mod, correlation_engine as ce_mod, scoring as sc_mod
+    from core import ingestion as ing_mod, correlation_engine as ce_mod, scoring as sc_mod, model1_understanding as m1_mod
 
     db_mod.init_db()
     window = ing_mod.init_window(window_seconds=1800)
+    run_id = uuid.uuid4().hex[:6].upper()
 
     incidents = []
     for event_raw in events:
-        # Build IncomingEvent manually
+        ev_copy = copy.deepcopy(event_raw)
+        ev_copy["event_id"] = f"{ev_copy['event_id']}-{run_id}"
+        if ev_copy.get("related_events"):
+            ev_copy["related_events"] = [f"{eid}-{run_id}" for eid in ev_copy["related_events"]]
+
         from models.schemas import IncomingEvent
-        event = IncomingEvent(**event_raw)
+        event = IncomingEvent(**ev_copy)
         event_dict = ing_mod.ingest_event(event)
         window_events = window.get_all()
         features = ing_mod.extract_features(event_dict, window_events)
@@ -638,6 +741,8 @@ def run_in_process(events: list[dict]) -> list[dict]:
             matched_ids = [e["event_id"] for e in match["matched_events"]]
             if not ce_mod.is_duplicate_incident(match["rule_id"], matched_ids, existing):
                 incident = sc_mod.compute_risk_score(match)
+                # MODEL 1: Incident Understanding & Reporting Enrichment
+                incident = m1_mod.understand_incident(incident, match["matched_events"])
                 db_mod.insert_incident(incident)
                 incidents.append(incident)
     return incidents
@@ -651,7 +756,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="ORBITAL SHIELD -- ML Brain Mock Event Generator"
     )
-    parser.add_argument("--scenario", choices=["1", "2", "3", "4", "5", "6", "7", "8", "all"],
+    parser.add_argument("--scenario", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "all"],
                         default="all", help="Which scenario to run")
     parser.add_argument("--replay", action="store_true",
                         help="POST events to a running server instead of in-process")
@@ -697,9 +802,11 @@ def main():
             incidents = run_in_process(events)
             for inc in incidents:
                 print(f"  [OK] Incident: {inc['event_id']} | {inc['event_type']} | "
-                      f"severity={inc['severity']} | score={inc['risk_score']}")
+                      f"severity={inc['severity']} | score={inc['risk_score']} | auth={inc.get('authorization_status')}")
+                if inc.get("historical_pattern_matched"):
+                    print(f"       [!] Section 13 Repeat Pattern: {inc.get('historical_pattern_details', {}).get('correlation_narrative', '')[:110]}...")
             if not incidents:
-                print("  [i] No incidents generated (correct for scenario 5)")
+                print("  [i] No incidents generated (expected for benign/noise scenarios)")
 
     print("\n" + "=" * 65)
     print("  Mock event replay complete.")

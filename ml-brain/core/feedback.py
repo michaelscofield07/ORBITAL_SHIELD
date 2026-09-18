@@ -36,7 +36,9 @@ _CONFIG_PATH = Path(__file__).parent.parent / "config" / "rules.yaml"
 def submit_feedback(incident_id: str, verdict: str, reviewer: str, notes: str | None) -> dict:
     """
     Store a CISO verdict in feedback_log. Also updates the incident's status.
-    This does NOT retrain anything — learning happens only at retrain time.
+    Supports CONFIRMED_REAL, FALSE_POSITIVE, RECTIFIED, and VERIFIED_LEGITIMATE.
+    When marked as rectified or verified legitimate, extracts pattern signatures
+    to prevent recurring alerts for authorized workflows.
     """
     incident = db.fetch_incident_by_id(incident_id)
     if not incident:
@@ -46,6 +48,8 @@ def submit_feedback(incident_id: str, verdict: str, reviewer: str, notes: str | 
     status_map = {
         "CONFIRMED_REAL": "CONFIRMED",
         "FALSE_POSITIVE": "FALSE_POSITIVE",
+        "RECTIFIED": "RECTIFIED",
+        "VERIFIED_LEGITIMATE": "VERIFIED_LEGITIMATE",
     }
     new_status = status_map.get(verdict, "CONFIRMED")
 
@@ -64,6 +68,18 @@ def submit_feedback(incident_id: str, verdict: str, reviewer: str, notes: str | 
     features_json: str | None = incident.get("features_json")
     # features_json may already be a str (from DB) or None (legacy rows)
 
+    # If rectified or verified legitimate, build pattern signature
+    is_rectified = 1 if verdict == "RECTIFIED" else 0
+    verified_pattern_json = None
+    if verdict in ("RECTIFIED", "VERIFIED_LEGITIMATE", "FALSE_POSITIVE"):
+        pattern_dict = {
+            "rule_id": incident.get("rule_id"),
+            "event_type": incident.get("event_type"),
+            "satellite_id": incident.get("satellite_id"),
+            "actor": incident.get("operator_id"),
+        }
+        verified_pattern_json = json.dumps(pattern_dict)
+
     # Store in feedback_log (the labeled training dataset — never delete)
     db.insert_feedback(
         incident_id=incident_id,
@@ -73,10 +89,12 @@ def submit_feedback(incident_id: str, verdict: str, reviewer: str, notes: str | 
         rule_id=incident.get("rule_id"),
         risk_score=incident.get("risk_score"),
         features_json=features_json,
+        is_rectified=is_rectified,
+        verified_pattern_json=verified_pattern_json,
     )
 
-    logger.info("Feedback stored: incident=%s verdict=%s reviewer=%s features_available=%s",
-                incident_id, verdict, reviewer, features_json is not None)
+    logger.info("Feedback stored: incident=%s verdict=%s reviewer=%s status=%s features_available=%s",
+                incident_id, verdict, reviewer, new_status, features_json is not None)
     return {
         "incident_id": incident_id,
         "verdict": verdict,
