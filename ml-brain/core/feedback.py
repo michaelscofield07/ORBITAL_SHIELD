@@ -14,6 +14,7 @@ This module never auto-applies feedback. It only prepares the update
 and commits it when explicitly triggered.
 """
 
+import json
 import logging
 import uuid
 import yaml
