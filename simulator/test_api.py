@@ -94,7 +94,7 @@ def test_empty_dataset_returns_404():
 
 
 def test_openapi_schema(api_client):
-    """Test OpenAPI schema contains /health and /telemetry/current endpoints."""
+    """Test OpenAPI schema contains /health, /telemetry/current, and /access/events endpoints."""
     client, _ = api_client
     response = client.get("/openapi.json")
 
@@ -102,6 +102,9 @@ def test_openapi_schema(api_client):
     schema = response.json()
     assert "/health" in schema["paths"]
     assert "/telemetry/current" in schema["paths"]
+    assert "/access" in schema["paths"]
+    assert "/access/events" in schema["paths"]
+
 
 
 def test_websocket_telemetry_stream(api_client):

@@ -9,7 +9,12 @@ from fastapi.testclient import TestClient
 import pandas as pd
 import pytest
 
-from simulator.access.models import AccessAction, AccessEvent, AccessStatus
+from simulator.access.models import (
+    AccessAction,
+    AccessEvent,
+    AccessStatus,
+    NormalizedAccessEvent,
+)
 from simulator.commands.models import CommandEvent, CommandStatus, CommandType
 from simulator.firmware.models import FirmwareData, FirmwareEvent, FirmwareStatus
 from simulator.gateway import SimulatorGateway
@@ -196,6 +201,121 @@ def test_websocket_stream_with_gateway(integrated_client):
         assert all(f.event_type == "TELEMETRY" for f in frames)
 
 
+def test_get_access_events_normalized_endpoint(integrated_client):
+    """Test GET /access/events returns 200 OK and valid P4 NormalizedAccessEvent schemas."""
+    client, gw = integrated_client
+
+    # 1. Populate access events covering various scenarios
+    # Successful login
+    client.post(
+        "/access",
+        json={
+            "operator_id": "operator_01",
+            "device_id": "GS-DEVICE-01",
+            "action": "LOGIN",
+            "status": "SUCCESS",
+            "source_ip": "10.0.0.15",
+            "role": "operator",
+            "previous_role": "operator",
+            "session_id": "SESSION-001",
+        },
+    )
+    # Failed login
+    gw.access_simulator.failed_login(
+        operator_id="operator_02",
+        device_id="GS-DEVICE-02",
+        reason="BAD_PASSWORD",
+        source_ip="10.0.0.20",
+    )
+    # Privilege change
+    gw.access_simulator.privilege_change(
+        operator_id="operator_01",
+        device_id="GS-DEVICE-01",
+        previous_role="operator",
+        new_role="admin",
+        source_ip="10.0.0.15",
+    )
+    # Command access
+    gw.access_simulator.command_access(
+        operator_id="operator_01",
+        device_id="GS-DEVICE-01",
+        command_type="CHANGE_ATTITUDE",
+    )
+    # Logout
+    gw.access_simulator.logout(
+        operator_id="operator_01",
+        device_id="GS-DEVICE-01",
+    )
+
+    # 2. GET /access/events
+    resp = client.get("/access/events")
+    assert resp.status_code == 200
+    events_raw = resp.json()
+    assert isinstance(events_raw, list)
+    assert len(events_raw) == 5
+
+    # 3. Validate every event adheres to NormalizedAccessEvent and has 10 required fields
+    required_fields = {
+        "timestamp",
+        "user_id",
+        "source_ip",
+        "device_id",
+        "action",
+        "result",
+        "role",
+        "previous_role",
+        "satellite_id",
+        "session_id",
+    }
+    for item in events_raw:
+        assert set(item.keys()) == required_fields
+        norm_model = NormalizedAccessEvent(**item)
+        assert norm_model.user_id in ("operator_01", "operator_02")
+        assert norm_model.satellite_id == "SAT-ORBITAL-01"
+        assert len(norm_model.session_id) > 0
+        assert len(norm_model.source_ip) > 0
+
+    # 4. Verify specific action & result mapping
+    # Event 0: LOGIN -> SUCCESS
+    assert events_raw[0]["action"] == "LOGIN"
+    assert events_raw[0]["result"] == "SUCCESS"
+    assert events_raw[0]["user_id"] == "operator_01"
+    assert events_raw[0]["source_ip"] == "10.0.0.15"
+    assert events_raw[0]["role"] == "operator"
+    assert events_raw[0]["previous_role"] == "operator"
+    assert events_raw[0]["session_id"] == "SESSION-001"
+
+    # Event 1: FAILED_LOGIN -> LOGIN with FAILED
+    assert events_raw[1]["action"] == "LOGIN"
+    assert events_raw[1]["result"] == "FAILED"
+    assert events_raw[1]["user_id"] == "operator_02"
+
+    # Event 2: PRIVILEGE_CHANGE -> role: admin, previous_role: operator
+    assert events_raw[2]["action"] == "PRIVILEGE_CHANGE"
+    assert events_raw[2]["result"] == "SUCCESS"
+    assert events_raw[2]["role"] == "admin"
+    assert events_raw[2]["previous_role"] == "operator"
+
+    # Event 3: COMMAND_ACCESS -> COMMAND
+    assert events_raw[3]["action"] == "COMMAND"
+    assert events_raw[3]["result"] == "SUCCESS"
+
+    # Event 4: LOGOUT -> LOGOUT
+    assert events_raw[4]["action"] == "LOGOUT"
+    assert events_raw[4]["result"] == "SUCCESS"
+
+    # 5. Verify query filtering
+    resp_filtered = client.get("/access/events?result=FAILED")
+    assert resp_filtered.status_code == 200
+    assert len(resp_filtered.json()) == 1
+    assert resp_filtered.json()[0]["result"] == "FAILED"
+
+    resp_cmd = client.get("/access/events?action=COMMAND")
+    assert resp_cmd.status_code == 200
+    assert len(resp_cmd.json()) == 1
+    assert resp_cmd.json()[0]["action"] == "COMMAND"
+
+
 def test_source_csv_remains_unchanged():
     """Verify source CSV remains 100% identical after full workflow operations."""
     dataset_path = Path(__file__).resolve().parent / "data" / "consolidated_dataset_raw.csv"
@@ -208,6 +328,8 @@ def test_source_csv_remains_unchanged():
     gw.submit_command(CommandType.REBOOT)
     gw.request_firmware_update("firmware_v1")
     gw.record_access_event("OP-TEST", "DEV-TEST", AccessAction.LOGIN)
+    gw.get_normalized_access_events()
 
     df_after = pd.read_csv(dataset_path)
     pd.testing.assert_frame_equal(df_before, df_after)
+

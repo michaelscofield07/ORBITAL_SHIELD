@@ -104,6 +104,65 @@ rules:
       min_severity: HIGH              # only HIGH or CRITICAL events count
       min_confidence: 0.85
 
+  - id: RULE_006
+    name: privilege_escalation_then_unauthorized_data_access
+    enabled: true
+    incident_type: UNAUTHORIZED_DATA_ACCESS_CHAIN
+    description: >
+      An operator session executes privilege change / escalation and subsequently performs
+      unauthorized queries or data access against restricted mission archives within 10 minutes.
+    conditions:
+      match_key: session_id
+      time_window_seconds: 600        # 10 minutes
+      min_sources: 1
+      min_events: 2
+      required_sources: []
+      required_event_types: [PRIVILEGE_ESCALATION, UNAUTHORIZED_DATA_ACCESS]
+
+  - id: RULE_007
+    name: repeated_failed_auth_then_compromise
+    enabled: true
+    incident_type: BRUTE_FORCE_COMPROMISE
+    description: >
+      Multiple failed authentication attempts on a satellite or terminal followed by
+      unauthorized command or access activity within 10 minutes.
+    conditions:
+      match_key: satellite_id
+      time_window_seconds: 600
+      min_sources: 1
+      min_events: 3
+      required_sources: []
+      required_event_types: [FAILED_LOGIN]
+
+  - id: RULE_008
+    name: sensitive_data_access_then_uplink_exfiltration
+    enabled: true
+    incident_type: DATA_EXFILTRATION_CHAIN
+    description: >
+      Restricted database access is rapidly followed by high-volume uplink/downlink commands
+      or telemetry anomalous transfers consistent with data exfiltration.
+    conditions:
+      match_key: satellite_id
+      time_window_seconds: 600
+      min_sources: 2
+      min_events: 2
+      required_sources: []
+      required_event_types: [UNAUTHORIZED_DATA_ACCESS]
+
+  - id: RULE_009
+    name: firmware_tampering_and_unauthorized_command
+    enabled: true
+    incident_type: FIRMWARE_COMMAND_HIJACK
+    description: >
+      Firmware integrity check failure or tampering detected in combination with unauthorized
+      satellite control commands.
+    conditions:
+      match_key: satellite_id
+      time_window_seconds: 900
+      min_sources: 2
+      min_events: 2
+      required_sources: [FIRMWARE, UPLINK]
+
 # ------------------------------------------------------------------
 # RISK SCORING WEIGHTS
 # Base score starts at 0. Each matched event_type adds its weight.
@@ -113,16 +172,19 @@ rules:
 
 scoring:
   weights:
-    TELEMETRY_ANOMALY:    25
-    SUSPICIOUS_LOGIN:     20
-    UNAUTHORIZED_COMMAND: 35
-    FIRMWARE_TAMPERING:   50
-    COMMAND_INJECTION:    30
-    ACCESS_VIOLATION:     20
-    REPLAY_ATTACK:        25
-    SIGNAL_INTERFERENCE:  15
-    DATA_EXFILTRATION:    40
-    INTEGRITY_FAILURE:    35
+    TELEMETRY_ANOMALY:        25
+    SUSPICIOUS_LOGIN:         20
+    FAILED_LOGIN:             15
+    UNAUTHORIZED_COMMAND:     35
+    FIRMWARE_TAMPERING:       50
+    COMMAND_INJECTION:        30
+    ACCESS_VIOLATION:         20
+    PRIVILEGE_ESCALATION:     35
+    UNAUTHORIZED_DATA_ACCESS: 40
+    REPLAY_ATTACK:            25
+    SIGNAL_INTERFERENCE:      15
+    DATA_EXFILTRATION:        40
+    INTEGRITY_FAILURE:        35
 
   multi_source_bonus: 10    # added for each source beyond the first
 

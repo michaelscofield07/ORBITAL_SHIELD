@@ -13,7 +13,12 @@ from fastapi import Body, FastAPI, HTTPException, Query, WebSocket, WebSocketDis
 from pydantic import BaseModel, Field
 import uvicorn
 
-from simulator.access.models import AccessAction, AccessEvent, AccessStatus
+from simulator.access.models import (
+    AccessAction,
+    AccessEvent,
+    AccessStatus,
+    NormalizedAccessEvent,
+)
 from simulator.commands.models import CommandEvent, CommandStatus, CommandType
 from simulator.firmware.models import FirmwareData, FirmwareEvent, FirmwareStatus
 from simulator.gateway import SimulatorGateway
@@ -45,6 +50,12 @@ class AccessEventRequest(BaseModel):
     status: AccessStatus = Field(default=AccessStatus.SUCCESS, description="Execution status")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Contextual metadata")
     satellite_id: Optional[str] = Field(None, description="Optional target satellite override")
+    source_ip: Optional[str] = Field(None, description="Optional simulated source IP")
+    role: Optional[str] = Field(None, description="Optional simulated user role")
+    previous_role: Optional[str] = Field(None, description="Optional simulated previous user role")
+    session_id: Optional[str] = Field(None, description="Optional simulated session identifier")
+    user_id: Optional[str] = Field(None, description="Optional simulated user identifier")
+
 
 
 def create_app(
@@ -284,14 +295,49 @@ def create_app(
     )
     def record_access_event(req: AccessEventRequest) -> AccessEvent:
         gw: SimulatorGateway = app.state.gateway
+        meta = dict(req.metadata) if req.metadata is not None else {}
+        if req.source_ip is not None:
+            meta["source_ip"] = req.source_ip
+        if req.role is not None:
+            meta["role"] = req.role
+        if req.previous_role is not None:
+            meta["previous_role"] = req.previous_role
+        if req.session_id is not None:
+            meta["session_id"] = req.session_id
+        if req.user_id is not None:
+            meta["user_id"] = req.user_id
+
+        effective_operator = req.user_id if req.user_id and not req.operator_id else req.operator_id
         return gw.record_access_event(
-            operator_id=req.operator_id,
+            operator_id=effective_operator,
             device_id=req.device_id,
             action=req.action,
             status=req.status,
-            metadata=req.metadata,
+            metadata=meta,
             satellite_id=req.satellite_id,
         )
+
+    @app.get(
+        "/access/events",
+        response_model=List[NormalizedAccessEvent],
+        summary="Get Normalized Access Events for P4 Security",
+        description="Retrieves operator and device access event logs formatted according to the P4 Access Security schema contract.",
+        tags=["Access"],
+    )
+    def get_normalized_access_events(
+        limit: Optional[int] = Query(None, gt=0, description="Max records to return"),
+        user_id: Optional[str] = Query(None, description="Filter by user/operator ID"),
+        action: Optional[str] = Query(None, description="Filter by normalized action (e.g. LOGIN, LOGOUT, COMMAND)"),
+        acc_result: Optional[str] = Query(None, alias="result", description="Filter by result (SUCCESS, FAILED)"),
+    ) -> List[NormalizedAccessEvent]:
+        gw: SimulatorGateway = app.state.gateway
+        return gw.get_normalized_access_events(
+            limit=limit,
+            user_id=user_id,
+            action=action,
+            result=acc_result,
+        )
+
 
     # =========================================================================
     # 6. Unified Event Bus Queries

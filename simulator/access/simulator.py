@@ -10,7 +10,13 @@ import threading
 from typing import Any, Dict, List, Optional, Union
 import uuid
 
-from .models import AccessAction, AccessData, AccessEvent, AccessStatus
+from .models import (
+    AccessAction,
+    AccessData,
+    AccessEvent,
+    AccessStatus,
+    NormalizedAccessEvent,
+)
 
 
 class AccessSimulator:
@@ -35,6 +41,11 @@ class AccessSimulator:
         event_id: Optional[str] = None,
         timestamp: Optional[str] = None,
         source: str = "GROUND_STATION_SIMULATOR",
+        source_ip: Optional[str] = None,
+        role: Optional[str] = None,
+        previous_role: Optional[str] = None,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> AccessEvent:
         """
         Constructs and validates an AccessEvent instance without modifying event history.
@@ -62,6 +73,18 @@ class AccessSimulator:
             raise TypeError(f"Expected AccessStatus or str, got {type(status)}")
 
         meta = dict(metadata) if metadata is not None else {}
+        if source_ip is not None:
+            meta["source_ip"] = source_ip
+        if role is not None:
+            meta["role"] = role
+        if previous_role is not None:
+            meta["previous_role"] = previous_role
+        if session_id is not None:
+            meta["session_id"] = session_id
+        if user_id is not None:
+            meta["user_id"] = user_id
+
+        effective_operator_id = str(user_id) if user_id and not operator_id else str(operator_id)
         sat_id = satellite_id if satellite_id is not None else self.default_satellite_id
         gen_access_id = access_id if access_id is not None else f"ACC-{uuid.uuid4().hex[:10].upper()}"
         gen_event_id = event_id if event_id is not None else str(uuid.uuid4())
@@ -69,7 +92,7 @@ class AccessSimulator:
 
         access_data = AccessData(
             access_id=gen_access_id,
-            operator_id=str(operator_id),
+            operator_id=effective_operator_id,
             device_id=str(device_id),
             action=action_enum,
             status=status_enum,
@@ -93,6 +116,11 @@ class AccessSimulator:
         status: Union[AccessStatus, str] = AccessStatus.SUCCESS,
         metadata: Optional[Dict[str, Any]] = None,
         satellite_id: Optional[str] = None,
+        source_ip: Optional[str] = None,
+        role: Optional[str] = None,
+        previous_role: Optional[str] = None,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> AccessEvent:
         """
         Creates and appends an access event to the sequential history log.
@@ -105,6 +133,11 @@ class AccessSimulator:
                 status=status,
                 metadata=metadata,
                 satellite_id=satellite_id,
+                source_ip=source_ip,
+                role=role,
+                previous_role=previous_role,
+                session_id=session_id,
+                user_id=user_id,
             )
             self._history.append(event)
             return event
@@ -128,6 +161,11 @@ class AccessSimulator:
         ip_address: Optional[str] = None,
         auth_method: str = "PASSWORD_MFA",
         satellite_id: Optional[str] = None,
+        source_ip: Optional[str] = None,
+        role: Optional[str] = None,
+        previous_role: Optional[str] = None,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> AccessEvent:
         """Simulates a successful operator login event."""
         meta: Dict[str, Any] = {"auth_method": auth_method}
@@ -141,6 +179,11 @@ class AccessSimulator:
             status=AccessStatus.SUCCESS,
             metadata=meta,
             satellite_id=satellite_id,
+            source_ip=source_ip or ip_address,
+            role=role,
+            previous_role=previous_role,
+            session_id=session_id,
+            user_id=user_id,
         )
 
     def failed_login(
@@ -151,6 +194,11 @@ class AccessSimulator:
         ip_address: Optional[str] = None,
         attempt_count: int = 1,
         satellite_id: Optional[str] = None,
+        source_ip: Optional[str] = None,
+        role: Optional[str] = None,
+        previous_role: Optional[str] = None,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> AccessEvent:
         """Simulates a failed operator login attempt."""
         meta: Dict[str, Any] = {
@@ -167,6 +215,11 @@ class AccessSimulator:
             status=AccessStatus.FAILURE,
             metadata=meta,
             satellite_id=satellite_id,
+            source_ip=source_ip or ip_address,
+            role=role,
+            previous_role=previous_role,
+            session_id=session_id,
+            user_id=user_id,
         )
 
     def logout(
@@ -175,6 +228,11 @@ class AccessSimulator:
         device_id: str,
         session_duration_sec: Optional[int] = None,
         satellite_id: Optional[str] = None,
+        source_ip: Optional[str] = None,
+        role: Optional[str] = None,
+        previous_role: Optional[str] = None,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> AccessEvent:
         """Simulates an operator logout event."""
         meta: Dict[str, Any] = {}
@@ -188,6 +246,11 @@ class AccessSimulator:
             status=AccessStatus.SUCCESS,
             metadata=meta,
             satellite_id=satellite_id,
+            source_ip=source_ip,
+            role=role,
+            previous_role=previous_role,
+            session_id=session_id,
+            user_id=user_id,
         )
 
     def new_device(
@@ -198,6 +261,11 @@ class AccessSimulator:
         os_platform: str = "LINUX",
         mac_address: Optional[str] = None,
         satellite_id: Optional[str] = None,
+        source_ip: Optional[str] = None,
+        role: Optional[str] = None,
+        previous_role: Optional[str] = None,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> AccessEvent:
         """Simulates a new unrecognized device registration/access event."""
         meta: Dict[str, Any] = {
@@ -214,6 +282,11 @@ class AccessSimulator:
             status=AccessStatus.SUCCESS,
             metadata=meta,
             satellite_id=satellite_id,
+            source_ip=source_ip,
+            role=role,
+            previous_role=previous_role,
+            session_id=session_id,
+            user_id=user_id,
         )
 
     def privilege_change(
@@ -224,11 +297,15 @@ class AccessSimulator:
         new_role: str,
         authorized_by: Optional[str] = None,
         satellite_id: Optional[str] = None,
+        source_ip: Optional[str] = None,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> AccessEvent:
         """Simulates an operator role / privilege level elevation or change."""
         meta: Dict[str, Any] = {
             "previous_role": previous_role,
             "new_role": new_role,
+            "role": new_role,
         }
         if authorized_by is not None:
             meta["authorized_by"] = authorized_by
@@ -240,6 +317,11 @@ class AccessSimulator:
             status=AccessStatus.SUCCESS,
             metadata=meta,
             satellite_id=satellite_id,
+            source_ip=source_ip,
+            role=new_role,
+            previous_role=previous_role,
+            session_id=session_id,
+            user_id=user_id,
         )
 
     def command_access(
@@ -250,6 +332,11 @@ class AccessSimulator:
         command_id: Optional[str] = None,
         channel: str = "UPLINK_PRIMARY",
         satellite_id: Optional[str] = None,
+        source_ip: Optional[str] = None,
+        role: Optional[str] = None,
+        previous_role: Optional[str] = None,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> AccessEvent:
         """Simulates an operator requesting access to send satellite commands."""
         meta: Dict[str, Any] = {
@@ -266,6 +353,11 @@ class AccessSimulator:
             status=AccessStatus.SUCCESS,
             metadata=meta,
             satellite_id=satellite_id,
+            source_ip=source_ip,
+            role=role,
+            previous_role=previous_role,
+            session_id=session_id,
+            user_id=user_id,
         )
 
     # --- History Queries & Filtering ---
@@ -297,6 +389,36 @@ class AccessSimulator:
 
             return records
 
+    def get_normalized_history(
+        self,
+        limit: Optional[int] = None,
+        user_id: Optional[str] = None,
+        action: Optional[str] = None,
+        result: Optional[str] = None,
+    ) -> List[NormalizedAccessEvent]:
+        """
+        Retrieves sequential access events normalized to the P4 Access Security schema contract.
+        Supports optional filtering by user_id, normalized action, and normalized result.
+        """
+        with self._lock:
+            normalized_events = [evt.to_normalized_event() for evt in self._history]
+
+            if user_id is not None:
+                normalized_events = [e for e in normalized_events if e.user_id == user_id]
+
+            if action is not None:
+                action_upper = action.upper()
+                normalized_events = [e for e in normalized_events if e.action == action_upper]
+
+            if result is not None:
+                result_upper = result.upper()
+                normalized_events = [e for e in normalized_events if e.result == result_upper]
+
+            if limit is not None and limit > 0:
+                normalized_events = normalized_events[-limit:]
+
+            return normalized_events
+
     def get_event_by_id(self, event_id: str) -> Optional[AccessEvent]:
         """Looks up an access event by its unique event_id."""
         with self._lock:
@@ -313,3 +435,4 @@ class AccessSimulator:
         """Clears all access event history."""
         with self._lock:
             self._history.clear()
+

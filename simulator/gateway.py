@@ -10,7 +10,12 @@ from pathlib import Path
 import threading
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 
-from simulator.access.models import AccessAction, AccessEvent, AccessStatus
+from simulator.access.models import (
+    AccessAction,
+    AccessEvent,
+    AccessStatus,
+    NormalizedAccessEvent,
+)
 from simulator.access.simulator import AccessSimulator
 from simulator.commands.generator import CommandGenerator
 from simulator.commands.models import CommandEvent, CommandStatus, CommandType
@@ -278,6 +283,22 @@ class SimulatorGateway:
             operator_id=operator_id,
             status=status,
         )
+
+    def get_normalized_access_events(
+        self,
+        limit: Optional[int] = None,
+        user_id: Optional[str] = None,
+        action: Optional[str] = None,
+        result: Optional[str] = None,
+    ) -> List[NormalizedAccessEvent]:
+        """Retrieves operator and device access event history formatted for P4 Access Security."""
+        return self.access_simulator.get_normalized_history(
+            limit=limit,
+            user_id=user_id,
+            action=action,
+            result=result,
+        )
+
 
     # --- Unified Event Stream & Query Interface ---
 

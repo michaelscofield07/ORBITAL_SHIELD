@@ -195,3 +195,156 @@ def test_json_serialization_and_deserialization(sim):
     deserialized = AccessEvent.model_validate_json(json_str)
     assert deserialized == event
     assert deserialized.data.metadata["new_role"] == "ADMIN"
+
+
+# =========================================================================
+# P1 - P4 Access Event Data Compatibility Tests
+# =========================================================================
+
+def test_p4_all_ten_required_fields_exist(sim):
+    """Test that every normalized access event exposes all 10 required P4 fields."""
+    event = sim.login("OP-01", "DEV-01")
+    norm = event.to_normalized_event()
+    norm_dict = event.to_normalized_dict()
+
+    required_fields = [
+        "timestamp",
+        "user_id",
+        "source_ip",
+        "device_id",
+        "action",
+        "result",
+        "role",
+        "previous_role",
+        "satellite_id",
+        "session_id",
+    ]
+
+    for field in required_fields:
+        assert hasattr(norm, field), f"Missing field on model: {field}"
+        assert field in norm_dict, f"Missing field in dict: {field}"
+        val = getattr(norm, field)
+        assert isinstance(val, str) and len(val) > 0, f"Field {field} is empty or not string: {val}"
+
+
+def test_p4_login_produces_success(sim):
+    """Test LOGIN produces SUCCESS result."""
+    event = sim.login("operator_01", "GS-DEVICE-01")
+    norm = event.to_normalized_event()
+
+    assert norm.action == "LOGIN"
+    assert norm.result == "SUCCESS"
+    assert norm.user_id == "operator_01"
+    assert norm.device_id == "GS-DEVICE-01"
+
+
+def test_p4_failed_login_produces_failed(sim):
+    """Test FAILED_LOGIN action maps to action LOGIN with result FAILED."""
+    event = sim.failed_login("operator_02", "GS-DEVICE-02", reason="BAD_PASSWORD")
+    norm = event.to_normalized_event()
+
+    assert norm.action == "LOGIN"
+    assert norm.result == "FAILED"
+    assert norm.user_id == "operator_02"
+    assert norm.device_id == "GS-DEVICE-02"
+
+
+def test_p4_logout_represented_correctly(sim):
+    """Test LOGOUT is represented correctly with action LOGOUT and result SUCCESS."""
+    event = sim.logout("operator_01", "GS-DEVICE-01")
+    norm = event.to_normalized_event()
+
+    assert norm.action == "LOGOUT"
+    assert norm.result == "SUCCESS"
+
+
+def test_p4_command_access_maps_to_command(sim):
+    """Test COMMAND_ACCESS action maps to COMMAND with result SUCCESS."""
+    event = sim.command_access("operator_01", "GS-DEVICE-01", command_type="POINT_ANTENNA")
+    norm = event.to_normalized_event()
+
+    assert norm.action == "COMMAND"
+    assert norm.result == "SUCCESS"
+
+
+def test_p4_privilege_change_preserves_role_and_previous_role(sim):
+    """Test PRIVILEGE_CHANGE retains both role and previous_role."""
+    event = sim.privilege_change(
+        operator_id="operator_01",
+        device_id="GS-DEVICE-01",
+        previous_role="operator",
+        new_role="admin",
+    )
+    norm = event.to_normalized_event()
+
+    assert norm.action == "PRIVILEGE_CHANGE"
+    assert norm.result == "SUCCESS"
+    assert norm.role == "admin"
+    assert norm.previous_role == "operator"
+
+
+def test_p4_every_event_has_session_id_source_ip_and_device_id(sim):
+    """Test that all events have valid session_id, source_ip, and device_id."""
+    events = [
+        sim.login("OP-A", "DEV-A"),
+        sim.failed_login("OP-B", "DEV-B"),
+        sim.logout("OP-A", "DEV-A"),
+        sim.new_device("OP-C", "DEV-C"),
+        sim.privilege_change("OP-A", "DEV-A", previous_role="operator", new_role="admin"),
+        sim.command_access("OP-A", "DEV-A", command_type="REBOOT"),
+    ]
+
+    for raw_evt in events:
+        norm = raw_evt.to_normalized_event()
+        assert norm.session_id is not None and len(norm.session_id) > 0
+        assert norm.source_ip is not None and len(norm.source_ip) > 0
+        assert norm.device_id is not None and len(norm.device_id) > 0
+
+
+def test_p4_deterministic_example_values(sim):
+    """Test full matching of the prompt's reference example."""
+    event = sim.login(
+        operator_id="operator_01",
+        device_id="GS-DEVICE-01",
+        source_ip="10.0.0.15",
+        role="operator",
+        previous_role="operator",
+        session_id="SESSION-001",
+    )
+    norm = event.to_normalized_event()
+
+    assert norm.user_id == "operator_01"
+    assert norm.source_ip == "10.0.0.15"
+    assert norm.device_id == "GS-DEVICE-01"
+    assert norm.action == "LOGIN"
+    assert norm.result == "SUCCESS"
+    assert norm.role == "operator"
+    assert norm.previous_role == "operator"
+    assert norm.satellite_id == "SAT-ORBITAL-01"
+    assert norm.session_id == "SESSION-001"
+
+
+def test_p4_get_normalized_history_and_filters(sim):
+    """Test querying normalized history with filters."""
+    sim.login("operator_01", "DEV-01")
+    sim.failed_login("operator_02", "DEV-02")
+    sim.command_access("operator_01", "DEV-01", command_type="TEST")
+
+    all_norm = sim.get_normalized_history()
+    assert len(all_norm) == 3
+
+    # Filter by user_id
+    op1_norm = sim.get_normalized_history(user_id="operator_01")
+    assert len(op1_norm) == 2
+
+    # Filter by action (COMMAND)
+    cmd_norm = sim.get_normalized_history(action="COMMAND")
+    assert len(cmd_norm) == 1
+    assert cmd_norm[0].action == "COMMAND"
+
+    # Filter by result (FAILED)
+    fail_norm = sim.get_normalized_history(result="FAILED")
+    assert len(fail_norm) == 1
+    assert fail_norm[0].action == "LOGIN"
+    assert fail_norm[0].result == "FAILED"
+
