@@ -11,9 +11,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app import app
 from schemas import SecurityEvent, Severity, Action
-from storage import DB_PATH
+import storage
 
 client = TestClient(app)
+
+@pytest.fixture(autouse=True, scope="module")
+def setup_test_db(tmp_path_factory):
+    tmp_dir = tmp_path_factory.mktemp("audit_test")
+    test_db = tmp_dir / "test_audit.db"
+    orig_db = storage.DB_PATH
+    storage.DB_PATH = test_db
+    storage.init_db()
+    yield test_db
+    storage.DB_PATH = orig_db
 
 def test_audit_health_and_root():
     r = client.get("/health")
@@ -92,7 +102,7 @@ def test_review_and_status():
 
 def test_tampering_detection():
     # Temporarily tamper a record
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(storage.DB_PATH)
     conn.execute("UPDATE audit_events SET event_json = REPLACE(event_json, 'Integration test anomaly', 'Tampered data')")
     conn.commit()
     conn.close()
@@ -103,7 +113,7 @@ def test_tampering_detection():
     assert "Tampering detected" in r.json()["message"]
 
     # Revert tampering
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(storage.DB_PATH)
     conn.execute("UPDATE audit_events SET event_json = REPLACE(event_json, 'Tampered data', 'Integration test anomaly')")
     conn.commit()
     conn.close()

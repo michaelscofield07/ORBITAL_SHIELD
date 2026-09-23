@@ -145,8 +145,11 @@ def determine_authorization_context(event_dict: dict) -> Tuple[str, str]:
             return AuthorizationStatus.VERIFIED_RECTIFIED.value, "Matched verified or rectified historical baseline."
         if "SUSP" in st:
             return AuthorizationStatus.SUSPICIOUS.value, "Marked suspicious — requires operator verification."
+        if "UNK" in st:
+            return AuthorizationStatus.UNKNOWN.value, "Authorization context is unknown; telemetry lacks definitive credentials."
         if "AUTH" in st:
             return AuthorizationStatus.AUTHORIZED.value, "Explicitly validated as authorized."
+
 
     event_type = event_dict.get("event_type", "").upper()
     evidence = event_dict.get("evidence", {}) or {}
@@ -232,7 +235,35 @@ def determine_authorization_context(event_dict: dict) -> Tuple[str, str]:
                 f"Unauthorized query or record retrieval against protected database '{db_name}'."
             )
 
-    # 5. Default benign context
+    # 5. Check CERT-In advisory and external threat intelligence context
+    source = str(event_dict.get("source", "")).upper()
+    cert_info = event_dict.get("cert_in_info") or {}
+    cert_ref = cert_info.get("cert_in_reference") or evidence.get("cert_in_reference") or event_dict.get("cert_in_reference") or "Advisory"
+    title = cert_info.get("title") or evidence.get("title") or event_dict.get("title") or ""
+    vectors = cert_info.get("threat_vectors") or evidence.get("threat_vectors") or []
+    desc = str(event_dict.get("description", "")).lower()
+    details = str(cert_info.get("details", "")).lower()
+    combined_threat_text = f"{desc} {details} {' '.join(str(v).lower() for v in vectors)} {title.lower()}"
+
+    if source == "CERT_IN" or event_type in {"CERT_IN_ADVISORY", "CERT_IN_SUMMARY"}:
+        unauth_indicators = {"unauthorized", "breach", "compromise", "malicious", "exploit", "injection", "tampering", "exfiltration", "attack", "stuffing"}
+        if any(w in combined_threat_text for w in unauth_indicators):
+            return (
+                AuthorizationStatus.UNAUTHORIZED.value,
+                f"CERT-In Advisory [{cert_ref}] confirms external unauthorized cyber incident / attack vector: {title or 'Threat notification'}."
+            )
+        sev = str(event_dict.get("severity", "")).upper()
+        if sev in {"HIGH", "CRITICAL"}:
+            return (
+                AuthorizationStatus.SUSPICIOUS.value,
+                f"CERT-In High-Severity Advisory [{cert_ref}] reports active threat context: {title or 'Security advisory'}."
+            )
+        return (
+            AuthorizationStatus.SUSPICIOUS.value,
+            f"CERT-In Advisory [{cert_ref}] provides external threat intelligence: {title or 'Security notification'}."
+        )
+
+    # 6. Default benign context
     if action in {"LOG", "MONITOR"}:
         return AuthorizationStatus.AUTHORIZED.value, "Routine operational event conforming to mission profile."
 
@@ -334,13 +365,87 @@ def normalize_security_event(raw_input: Union[dict, IncomingEvent]) -> dict:
 
     description = str(raw_dict.get("description", f"{event_type} on {satellite_id}")).strip()
 
+    # 10b. Extract CERT-In advisory and threat intelligence info
+    cert_in_info = copy.deepcopy(raw_dict.get("cert_in_info") or evidence.get("cert_in_info") or {})
+    if not isinstance(cert_in_info, dict):
+        cert_in_info = {"raw_cert_in": cert_in_info}
+
+    cert_ref = (
+        raw_dict.get("cert_in_reference")
+        or evidence.get("cert_in_reference")
+        or raw_dict.get("summary_id")
+        or evidence.get("summary_id")
+        or cert_in_info.get("cert_in_reference")
+    )
+    if not cert_ref and source == "CERT_IN" and event_id.startswith("CERTIN"):
+        cert_ref = event_id
+
+    title = (
+        raw_dict.get("title")
+        or evidence.get("title")
+        or cert_in_info.get("title")
+    )
+    details = (
+        raw_dict.get("details")
+        or raw_dict.get("summary")
+        or evidence.get("details")
+        or evidence.get("summary")
+        or cert_in_info.get("details")
+    )
+    threat_vectors = (
+        raw_dict.get("threat_vectors")
+        or evidence.get("threat_vectors")
+        or cert_in_info.get("threat_vectors")
+        or []
+    )
+    if not isinstance(threat_vectors, list):
+        threat_vectors = [str(threat_vectors)]
+
+    recommended_actions = (
+        raw_dict.get("recommended_actions")
+        or raw_dict.get("mandate_actions")
+        or evidence.get("recommended_actions")
+        or evidence.get("mandate_actions")
+        or cert_in_info.get("recommended_actions")
+        or []
+    )
+    if not isinstance(recommended_actions, list):
+        recommended_actions = [str(recommended_actions)]
+
+    target_inc_id = (
+        raw_dict.get("incident_id")
+        or evidence.get("incident_id")
+        or cert_in_info.get("incident_id")
+    )
+
+    if cert_ref or title or threat_vectors or recommended_actions or source == "CERT_IN":
+        cert_in_info["cert_in_reference"] = cert_ref
+        cert_in_info["title"] = title
+        cert_in_info["details"] = details
+        cert_in_info["threat_vectors"] = threat_vectors
+        cert_in_info["recommended_actions"] = recommended_actions
+        cert_in_info["incident_id"] = target_inc_id
+
+        # Also mirror in evidence for complete backward compatibility
+        evidence["cert_in_reference"] = cert_ref
+        evidence["title"] = title
+        evidence["threat_vectors"] = threat_vectors
+        evidence["recommended_actions"] = recommended_actions
+        if target_inc_id:
+            evidence["incident_id"] = target_inc_id
+
     # 11. Normalize / Infer Authorization Status & Rationale
     temp_event = {
         "event_type": event_type,
+        "source": source,
+        "severity": severity,
         "evidence": evidence,
         "action": action,
+        "description": description,
         "authorization_status": raw_dict.get("authorization_status"),
         "data_access": data_access,
+        "cert_in_info": cert_in_info,
+        "cert_in_reference": cert_ref,
     }
     auth_status, auth_reason = determine_authorization_context(temp_event)
 
@@ -371,6 +476,8 @@ def normalize_security_event(raw_input: Union[dict, IncomingEvent]) -> dict:
         "packet_info": packet_info,
         "raw_log": raw_log,
         "ciso_notes": raw_dict.get("ciso_notes"),
+        "cert_in_info": cert_in_info,
+        "cert_in_reference": cert_ref,
     }
 
     return normalized

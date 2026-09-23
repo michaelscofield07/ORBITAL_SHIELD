@@ -10,8 +10,10 @@ from schemas import SecurityEvent
 from hash_chain import compute_record_hash
 from storage import get_last_hash, save_record, get_all_records
 import json
+import threading
 
 router = APIRouter()
+_chain_lock = threading.Lock()
 
 @router.get("/audit/events")
 def list_events():
@@ -28,13 +30,14 @@ def list_events():
 
 @router.post("/audit/events")
 def receive_event(event: SecurityEvent):
-    previous_hash = get_last_hash()
-    record_hash = compute_record_hash(event, previous_hash)
+    with _chain_lock:
+        previous_hash = get_last_hash()
+        record_hash = compute_record_hash(event, previous_hash)
 
-    try:
-        save_record(event, record_hash, previous_hash)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to store event: {e}")
+        try:
+            save_record(event, record_hash, previous_hash)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to store event: {e}")
 
     return {
         "status": "stored",

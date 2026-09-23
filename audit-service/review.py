@@ -8,7 +8,7 @@ and records who did it and when.
 from fastapi import APIRouter, HTTPException
 from datetime import datetime
 from schemas import ReviewStatus
-from storage import DB_PATH
+import storage
 import sqlite3
 from typing import Optional
 
@@ -17,7 +17,7 @@ router = APIRouter()
 
 @router.post("/audit/{event_id}/review")
 def review_event(event_id: str, status: ReviewStatus, reviewed_by: str, notes: Optional[str] = None):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(storage.DB_PATH)
 
     # Confirm the event actually exists before trying to update it
     existing = conn.execute(
@@ -46,7 +46,7 @@ def review_event(event_id: str, status: ReviewStatus, reviewed_by: str, notes: O
 
 @router.get("/audit/{event_id}/status")
 def get_review_status(event_id: str):
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(storage.DB_PATH)
     row = conn.execute(
         "SELECT review_status FROM audit_events WHERE event_id = ?", (event_id,)
     ).fetchone()

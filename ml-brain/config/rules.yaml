@@ -1,196 +1,200 @@
 rules:
-  - id: RULE_001
-    name: cross_module_same_session
-    enabled: true
-    incident_type: CROSS_MODULE_ATTACK
-    sparta_technique_id: SV-MA-4
-    cert_in_category: Credential.CompromisedSession
-    description: >
-      Two or more events from different security modules share the same operator
-      session within a short time window — a strong indicator of a coordinated
-      or compromised session spanning multiple subsystems.
-    conditions:
-      match_key: session_id
-      time_window_seconds: 330
-      min_sources: 2
-      min_events: 2
-      required_sources: []
+- id: RULE_001
+  name: cross_module_same_session
+  enabled: true
+  incident_type: CROSS_MODULE_ATTACK
+  sparta_technique_id: SV-MA-4
+  cert_in_category: Credential.CompromisedSession
+  description: "Two or more events from different security modules share the same\
+    \ operator session within a short time window \u2014 a strong indicator of a coordinated\
+    \ or compromised session spanning multiple subsystems.\n"
+  conditions:
+    match_key: session_id
+    time_window_seconds: 390
+    min_sources: 2
+    min_events: 2
+    required_sources: []
+- id: RULE_002
+  name: escalating_severity_chain
+  enabled: true
+  incident_type: ESCALATING_INCIDENT
+  sparta_technique_id: SV-AC-3
+  cert_in_category: Network.EscalatingAnomaly
+  description: "Events on the same satellite show a monotonically increasing severity\
+    \ progression (LOW \u2192 MEDIUM \u2192 HIGH or higher) over the observation window,\
+    \ suggesting a developing, multi-stage attack or cascading failure.\n"
+  conditions:
+    match_key: satellite_id
+    time_window_seconds: 600
+    min_sources: 1
+    min_events: 3
+    severity_pattern:
+    - LOW
+    - MEDIUM
+    - HIGH
+- id: RULE_003
+  name: firmware_plus_access_anomaly
+  enabled: true
+  incident_type: SUPPLY_CHAIN_RISK
+  sparta_technique_id: SV-IT-1
+  cert_in_category: Supply.FirmwareIntegrity
+  description: "A FIRMWARE integrity event and an ACCESS anomaly event overlap within\
+    \ the observation window on the same satellite \u2014 consistent with a supply-chain\
+    \ attack pattern where a malicious firmware update accompanies stolen credentials\
+    \ or an insider-threat login.\n"
+  conditions:
+    match_key: satellite_id
+    time_window_seconds: 900
+    min_sources: 2
+    min_events: 2
+    required_sources:
+    - FIRMWARE
+    - ACCESS
+- id: RULE_004
+  name: multi_source_same_satellite
+  enabled: true
+  incident_type: MULTI_VECTOR_ATTACK
+  sparta_technique_id: SV-MA-2
+  cert_in_category: Network.MultiVectorAttack
+  description: "Three or more independent security modules have each fired at least\
+    \ one event against the same satellite within the observation window \u2014 consistent\
+    \ with a broad, multi-vector attack against a single asset.\n"
+  conditions:
+    match_key: satellite_id
+    time_window_seconds: 600
+    min_sources: 3
+    min_events: 3
+    required_sources: []
+- id: RULE_005
+  name: high_confidence_critical_pair
+  enabled: true
+  incident_type: CRITICAL_THREAT_CLUSTER
+  sparta_technique_id: SV-AC-1
+  cert_in_category: Network.HighFidelityThreat
+  description: "Two or more HIGH/CRITICAL severity events with confidence >= 0.85\
+    \ from different modules target the same operator or satellite \u2014 high-fidelity\
+    \ signals pointing to a confirmed threat needing immediate human review.\n"
+  conditions:
+    match_key: satellite_id
+    time_window_seconds: 390
+    min_sources: 2
+    min_events: 2
+    required_sources: []
+    min_severity: HIGH
+    min_confidence: 0.85
+- id: RULE_006
+  name: privilege_escalation_then_unauthorized_data_access
+  enabled: true
+  incident_type: UNAUTHORIZED_DATA_ACCESS_CHAIN
+  sparta_technique_id: SV-AC-2
+  cert_in_category: Access.PrivilegeEscalation
+  description: 'An operator session executes privilege change / escalation and subsequently
+    performs unauthorized queries or data access against restricted mission archives
+    within 10 minutes.
 
-  - id: RULE_002
-    name: escalating_severity_chain
-    enabled: true
-    incident_type: ESCALATING_INCIDENT
-    sparta_technique_id: SV-AC-3
-    cert_in_category: Network.EscalatingAnomaly
-    description: >
-      Events on the same satellite show a monotonically increasing severity
-      progression (LOW → MEDIUM → HIGH or higher) over the observation window,
-      suggesting a developing, multi-stage attack or cascading failure.
-    conditions:
-      match_key: satellite_id
-      time_window_seconds: 600
-      min_sources: 1
-      min_events: 3
-      severity_pattern: [LOW, MEDIUM, HIGH]
+    '
+  conditions:
+    match_key: session_id
+    time_window_seconds: 600
+    min_sources: 1
+    min_events: 2
+    required_sources: []
+    required_event_types:
+    - PRIVILEGE_ESCALATION
+    - UNAUTHORIZED_DATA_ACCESS
+- id: RULE_007
+  name: repeated_failed_auth_then_compromise
+  enabled: true
+  incident_type: BRUTE_FORCE_COMPROMISE
+  sparta_technique_id: SV-AC-1
+  cert_in_category: Credential.BruteForce
+  description: 'Multiple failed authentication attempts on a satellite or terminal
+    followed by unauthorized command or access activity within 10 minutes.
 
-  - id: RULE_003
-    name: firmware_plus_access_anomaly
-    enabled: true
-    incident_type: SUPPLY_CHAIN_RISK
-    sparta_technique_id: SV-IT-1
-    cert_in_category: Supply.FirmwareIntegrity
-    description: >
-      A FIRMWARE integrity event and an ACCESS anomaly event overlap within the
-      observation window on the same satellite — consistent with a supply-chain
-      attack pattern where a malicious firmware update accompanies stolen
-      credentials or an insider-threat login.
-    conditions:
-      match_key: satellite_id
-      time_window_seconds: 900
-      min_sources: 2
-      min_events: 2
-      required_sources: [FIRMWARE, ACCESS]
+    '
+  conditions:
+    match_key: satellite_id
+    time_window_seconds: 600
+    min_sources: 1
+    min_events: 3
+    required_sources: []
+    required_event_types:
+    - FAILED_LOGIN
+- id: RULE_008
+  name: sensitive_data_access_then_uplink_exfiltration
+  enabled: true
+  incident_type: DATA_EXFILTRATION_CHAIN
+  sparta_technique_id: SV-EX-1
+  cert_in_category: Data.Exfiltration
+  description: 'Restricted database access is rapidly followed by high-volume uplink/downlink
+    commands or telemetry anomalous transfers consistent with data exfiltration.
 
-  - id: RULE_004
-    name: multi_source_same_satellite
-    enabled: true
-    incident_type: MULTI_VECTOR_ATTACK
-    sparta_technique_id: SV-MA-2
-    cert_in_category: Network.MultiVectorAttack
-    description: >
-      Three or more independent security modules have each fired at least one
-      event against the same satellite within the observation window — consistent
-      with a broad, multi-vector attack against a single asset.
-    conditions:
-      match_key: satellite_id
-      time_window_seconds: 600
-      min_sources: 3
-      min_events: 3
-      required_sources: []
+    '
+  conditions:
+    match_key: satellite_id
+    time_window_seconds: 600
+    min_sources: 2
+    min_events: 2
+    required_sources: []
+    required_event_types:
+    - UNAUTHORIZED_DATA_ACCESS
+- id: RULE_009
+  name: firmware_tampering_and_unauthorized_command
+  enabled: true
+  incident_type: FIRMWARE_COMMAND_HIJACK
+  sparta_technique_id: SV-IT-2
+  cert_in_category: Supply.FirmwareTampering
+  description: 'Firmware integrity check failure or tampering detected in combination
+    with unauthorized satellite control commands.
 
-  - id: RULE_005
-    name: high_confidence_critical_pair
-    enabled: true
-    incident_type: CRITICAL_THREAT_CLUSTER
-    sparta_technique_id: SV-AC-1
-    cert_in_category: Network.HighFidelityThreat
-    description: >
-      Two or more HIGH/CRITICAL severity events with confidence >= 0.85 from
-      different modules target the same operator or satellite — high-fidelity
-      signals pointing to a confirmed threat needing immediate human review.
-    conditions:
-      match_key: satellite_id
-      time_window_seconds: 330
-      min_sources: 2
-      min_events: 2
-      required_sources: []
-      min_severity: HIGH
-      min_confidence: 0.85
-
-  - id: RULE_006
-    name: privilege_escalation_then_unauthorized_data_access
-    enabled: true
-    incident_type: UNAUTHORIZED_DATA_ACCESS_CHAIN
-    sparta_technique_id: SV-AC-2
-    cert_in_category: Access.PrivilegeEscalation
-    description: >
-      An operator session executes privilege change / escalation and subsequently performs
-      unauthorized queries or data access against restricted mission archives within 10 minutes.
-    conditions:
-      match_key: session_id
-      time_window_seconds: 600
-      min_sources: 1
-      min_events: 2
-      required_sources: []
-      required_event_types: [PRIVILEGE_ESCALATION, UNAUTHORIZED_DATA_ACCESS]
-
-  - id: RULE_007
-    name: repeated_failed_auth_then_compromise
-    enabled: true
-    incident_type: BRUTE_FORCE_COMPROMISE
-    sparta_technique_id: SV-AC-1
-    cert_in_category: Credential.BruteForce
-    description: >
-      Multiple failed authentication attempts on a satellite or terminal followed by
-      unauthorized command or access activity within 10 minutes.
-    conditions:
-      match_key: satellite_id
-      time_window_seconds: 600
-      min_sources: 1
-      min_events: 3
-      required_sources: []
-      required_event_types: [FAILED_LOGIN]
-
-  - id: RULE_008
-    name: sensitive_data_access_then_uplink_exfiltration
-    enabled: true
-    incident_type: DATA_EXFILTRATION_CHAIN
-    sparta_technique_id: SV-EX-1
-    cert_in_category: Data.Exfiltration
-    description: >
-      Restricted database access is rapidly followed by high-volume uplink/downlink commands
-      or telemetry anomalous transfers consistent with data exfiltration.
-    conditions:
-      match_key: satellite_id
-      time_window_seconds: 600
-      min_sources: 2
-      min_events: 2
-      required_sources: []
-      required_event_types: [UNAUTHORIZED_DATA_ACCESS]
-
-  - id: RULE_009
-    name: firmware_tampering_and_unauthorized_command
-    enabled: true
-    incident_type: FIRMWARE_COMMAND_HIJACK
-    sparta_technique_id: SV-IT-2
-    cert_in_category: Supply.FirmwareTampering
-    description: >
-      Firmware integrity check failure or tampering detected in combination with unauthorized
-      satellite control commands.
-    conditions:
-      match_key: satellite_id
-      time_window_seconds: 900
-      min_sources: 2
-      min_events: 2
-      required_sources: [FIRMWARE, UPLINK]
-
+    '
+  conditions:
+    match_key: satellite_id
+    time_window_seconds: 900
+    min_sources: 2
+    min_events: 2
+    required_sources:
+    - FIRMWARE
+    - UPLINK
 scoring:
   weights:
-    TELEMETRY_ANOMALY:        25
-    SUSPICIOUS_LOGIN:         20
-    FAILED_LOGIN:             15
-    UNAUTHORIZED_COMMAND:     35
-    FIRMWARE_TAMPERING:       50
-    COMMAND_INJECTION:        30
-    ACCESS_VIOLATION:         20
-    PRIVILEGE_ESCALATION:     35
+    TELEMETRY_ANOMALY: 25
+    SUSPICIOUS_LOGIN: 20
+    FAILED_LOGIN: 15
+    UNAUTHORIZED_COMMAND: 35
+    FIRMWARE_TAMPERING: 50
+    COMMAND_INJECTION: 30
+    ACCESS_VIOLATION: 20
+    PRIVILEGE_ESCALATION: 35
     UNAUTHORIZED_DATA_ACCESS: 40
-    REPLAY_ATTACK:            25
-    SIGNAL_INTERFERENCE:      15
-    DATA_EXFILTRATION:        40
-    INTEGRITY_FAILURE:        35
-
+    REPLAY_ATTACK: 25
+    SIGNAL_INTERFERENCE: 15
+    DATA_EXFILTRATION: 40
+    INTEGRITY_FAILURE: 35
   multi_source_bonus: 10
   ml_adjustment_cap: 15
-
   severity_thresholds:
     CRITICAL: 70
     HIGH: 40
     MEDIUM: 20
     LOW: 0
-
 feedback:
   false_positive_threshold: 3
   threshold_widening_step: 30
   max_threshold_seconds: 3600
   min_feedback_for_retrain: 5
-
 window:
   in_memory_seconds: 1800
   max_events_in_memory: 5000
-
 audit:
   endpoint: http://localhost:8006/audit/events
   timeout_seconds: 5
   retry_on_failure: true
   max_retries: 3
+model3:
+  ollama_host: http://localhost:11434
+  primary_model: deepseek-r1:14b
+  fallback_model: qwen3:14b
+  timeout_seconds: 180
+  max_open_incidents_to_process: 10
+  verification_min_window_seconds: 15
