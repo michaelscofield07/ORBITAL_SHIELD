@@ -19,6 +19,7 @@ import importlib
 import json
 import os
 import sys
+import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -562,7 +563,7 @@ class TestModel3APIEndpoints:
         # 2. Call verify endpoint
         verif_resp = api_client.post(
             f"/correlations/{inc_id}/recovery-guidance/verify",
-            params={"reviewer": "ciso_verifier", "notes": "Clean telemetry confirmed"}
+            json={"reviewer": "ciso_verifier", "notes": "Clean telemetry confirmed"}
         )
         assert verif_resp.status_code == 200
         vdata = verif_resp.json()
@@ -662,7 +663,7 @@ class TestModel3APIEndpoints:
         # 2. Call verify endpoint
         verif_resp = api_client.post(
             f"/correlations/{inc_id}/recovery-guidance/verify",
-            params={"reviewer": "ciso_verifier", "notes": "Telemetry re-test"}
+            json={"reviewer": "ciso_verifier", "notes": "Telemetry re-test"}
         )
         assert verif_resp.status_code == 200
         vdata = verif_resp.json()
@@ -722,7 +723,10 @@ class TestModel3APIEndpoints:
         assert "ACCEPTED or EDITED" in apply_resp_err.json()["detail"]
 
         # Guard Test B: Calling /verify before /mark-applied must return 400
-        verif_pre_resp = api_client.post(f"/correlations/{inc_id}/recovery-guidance/verify")
+        verif_pre_resp = api_client.post(
+            f"/correlations/{inc_id}/recovery-guidance/verify",
+            json={"reviewer": "ciso_ops"}
+        )
         assert verif_pre_resp.status_code == 400
         assert "Cannot verify before CISO confirms remediation was applied" in verif_pre_resp.json()["detail"]
 
@@ -741,7 +745,10 @@ class TestModel3APIEndpoints:
         assert apply_resp.json()["review_status"] == "REMEDIATION_APPLIED"
 
         # Guard Test C: Calling /verify immediately before observation window elapses must return 409
-        verif_early_resp = api_client.post(f"/correlations/{inc_id}/recovery-guidance/verify")
+        verif_early_resp = api_client.post(
+            f"/correlations/{inc_id}/recovery-guidance/verify",
+            json={"reviewer": "ciso_ops"}
+        )
         assert verif_early_resp.status_code == 409
         detail = verif_early_resp.json()["detail"]
         assert "retry_after_seconds" in detail
@@ -827,8 +834,29 @@ class TestModel3APIEndpoints:
             applied_at=(now - timedelta(seconds=60)).isoformat()
         )
 
+        # Ingest benign telemetry post-remediation to enable RECTIFIED verification
+        benign_ev = {
+            "event_id": f"EV-STEPPER-{uuid.uuid4().hex[:6]}",
+            "timestamp": (now + timedelta(seconds=1)).isoformat(),
+            "source": "downlink-engine",
+            "satellite_id": "SAT-STEP-01",
+            "event_type": "TELEMETRY_FRAME_NORMAL",
+            "severity": "INFO",
+            "confidence": 0.99,
+            "description": "Normal frame received post-remediation",
+            "action": "ALLOW",
+            "evidence": {},
+            "related_events": [],
+            "operator_id": "OP-STEPPER",
+            "session_id": "SESS-STEPPER",
+        }
+        database.insert_event(benign_ev)
+
         # Stage 5: RECTIFIED (after verification succeeds)
-        verif_r = api_client.post(f"/correlations/{inc_id}/recovery-guidance/verify")
+        verif_r = api_client.post(
+            f"/correlations/{inc_id}/recovery-guidance/verify",
+            json={"reviewer": "ciso_stepper"}
+        )
         assert verif_r.status_code == 200
         s5 = api_client.get(f"/correlations/{inc_id}/model3-status").json()
         assert s5["current_stage"] == "RECTIFIED"
@@ -836,7 +864,10 @@ class TestModel3APIEndpoints:
         assert s5["timestamps"]["verified_at"] is not None
 
         # Stage 5b: Verify idempotency - second call to /verify on already-rectified incident
-        verif_r2 = api_client.post(f"/correlations/{inc_id}/recovery-guidance/verify")
+        verif_r2 = api_client.post(
+            f"/correlations/{inc_id}/recovery-guidance/verify",
+            json={"reviewer": "ciso_stepper"}
+        )
         assert verif_r2.status_code == 200
         data2 = verif_r2.json()
         assert data2["verification_result"] == "PASSED"
@@ -924,4 +955,222 @@ class TestModel3APIEndpoints:
         )
         assert edit_resp.status_code == 400
         assert "dismissed" in edit_resp.json()["detail"].lower()
+
+    @patch("core.llm_client.generate_with_fallback")
+    def test_verify_zero_post_remediation_events_returns_awaiting_telemetry(self, mock_llm, api_client):
+        """Asserts that calling /verify with 0 post-remediation events returns AWAITING_TELEMETRY, NOT RECTIFIED."""
+        mock_llm.return_value = self._MOCK_PLAN
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        inc_id = f"INC-ZERO-TELEMETRY-{uuid.uuid4().hex[:6]}"
+        inc = {
+            "event_id": inc_id,
+            "timestamp": now_iso,
+            "source": "ML_BRAIN",
+            "satellite_id": "SAT-ZERO-01",
+            "rule_id": "RULE_001",
+            "event_type": "CROSS_MODULE_ATTACK",
+            "severity": "HIGH",
+            "confidence": 0.85,
+            "description": "Zero post-remediation telemetry regression test",
+            "related_events": [],
+            "action": "HUMAN_REVIEW",
+            "risk_score": 75,
+            "status": "OPEN",
+            "created_at": now_iso,
+        }
+        database.insert_incident(inc)
+        api_client.get(f"/correlations/{inc_id}/recovery-guidance")
+        api_client.post(
+            f"/correlations/{inc_id}/recovery-guidance/review",
+            json={"review_status": "ACCEPTED", "reviewer": "ciso_ops"}
+        )
+
+        guid = database.fetch_recovery_guidance_by_incident(inc_id)
+        # Mark remediation applied 60s in the past to satisfy observation window
+        database.mark_remediation_applied(
+            guid["guidance_id"],
+            reviewer="ciso_ops",
+            applied_at=(now - timedelta(seconds=60)).isoformat(),
+            notes="Remediation applied outside system"
+        )
+
+        # 0 post-remediation events exist. Call /verify
+        verif_resp = api_client.post(
+            f"/correlations/{inc_id}/recovery-guidance/verify",
+            json={"reviewer": "ciso_verifier", "notes": "Checking rectification without new telemetry"}
+        )
+        assert verif_resp.status_code == 200
+        vdata = verif_resp.json()
+        assert vdata["verification_result"] == "AWAITING_TELEMETRY"
+        assert vdata["verification_result"] != "RECTIFIED"
+        assert vdata["status_updated_to"] != "RECTIFIED"
+        assert vdata["evidence_summary"]["post_events_count"] == 0
+
+        # Confirm incident in database remains OPEN and was NOT marked RECTIFIED
+        db_inc = database.fetch_incident_by_id(inc_id)
+        assert db_inc["status"] != "RECTIFIED"
+        assert db_inc["status"] == "OPEN"
+
+    @patch("core.llm_client.generate_with_fallback")
+    def test_verify_stale_telemetry_excluded(self, mock_llm, api_client):
+        """Asserts that events with stale timestamps (far in past relative to ingested_at or before remediation) are excluded."""
+        mock_llm.return_value = self._MOCK_PLAN
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        inc_id = f"INC-STALE-TELEMETRY-{uuid.uuid4().hex[:6]}"
+        sat_id = "SAT-STALE-01"
+        inc = {
+            "event_id": inc_id,
+            "timestamp": now_iso,
+            "source": "ML_BRAIN",
+            "satellite_id": sat_id,
+            "rule_id": "RULE_001",
+            "event_type": "CROSS_MODULE_ATTACK",
+            "severity": "HIGH",
+            "confidence": 0.85,
+            "description": "Stale telemetry exclusion regression test",
+            "related_events": [],
+            "action": "HUMAN_REVIEW",
+            "risk_score": 75,
+            "status": "OPEN",
+            "created_at": now_iso,
+        }
+        database.insert_incident(inc)
+        api_client.get(f"/correlations/{inc_id}/recovery-guidance")
+        api_client.post(
+            f"/correlations/{inc_id}/recovery-guidance/review",
+            json={"review_status": "ACCEPTED", "reviewer": "ciso_ops"}
+        )
+
+        guid = database.fetch_recovery_guidance_by_incident(inc_id)
+        applied_at_dt = now - timedelta(seconds=60)
+        database.mark_remediation_applied(
+            guid["guidance_id"],
+            reviewer="ciso_ops",
+            applied_at=applied_at_dt.isoformat(),
+            notes="Remediation applied outside system"
+        )
+
+        # Ingest a stale event: timestamp is 2 hours in the past relative to current ingestion
+        stale_event = {
+            "event_id": f"EV-STALE-{uuid.uuid4().hex[:6]}",
+            "timestamp": (now - timedelta(hours=2)).isoformat(),
+            "source": "downlink-engine",
+            "satellite_id": sat_id,
+            "event_type": "TELEMETRY_FRAME_NORMAL",
+            "severity": "INFO",
+            "confidence": 0.99,
+            "description": "Stale historical telemetry replayed post-remediation",
+            "action": "ALLOW",
+            "evidence": {},
+            "related_events": [],
+            "operator_id": "OP-HISTORICAL",
+            "session_id": "SESS-HISTORICAL",
+        }
+        database.insert_event(stale_event)
+
+        # Call /verify: only the stale event exists, which must be excluded
+        verif_resp = api_client.post(
+            f"/correlations/{inc_id}/recovery-guidance/verify",
+            json={"reviewer": "ciso_verifier", "notes": "Verify with stale event"}
+        )
+        assert verif_resp.status_code == 200
+        vdata = verif_resp.json()
+        assert vdata["verification_result"] == "AWAITING_TELEMETRY"
+        assert vdata["verification_result"] != "RECTIFIED"
+        assert vdata["evidence_summary"]["post_events_count"] == 0
+
+        # Pre-existing event with future timestamp ingested BEFORE remediation:
+        # Pre-existing attack event must also be excluded because ingested_at < applied_at
+        inc_id2 = f"INC-FUTURE-TS-{uuid.uuid4().hex[:6]}"
+        inc2 = {
+            "event_id": inc_id2,
+            "timestamp": now_iso,
+            "source": "ML_BRAIN",
+            "satellite_id": "SAT-FUTURE-02",
+            "rule_id": "RULE_001",
+            "event_type": "CROSS_MODULE_ATTACK",
+            "severity": "HIGH",
+            "confidence": 0.85,
+            "description": "Future timestamp pre-remediation test",
+            "related_events": [],
+            "action": "HUMAN_REVIEW",
+            "risk_score": 75,
+            "status": "OPEN",
+            "created_at": now_iso,
+        }
+        database.insert_incident(inc2)
+        api_client.get(f"/correlations/{inc_id2}/recovery-guidance")
+        api_client.post(
+            f"/correlations/{inc_id2}/recovery-guidance/review",
+            json={"review_status": "ACCEPTED", "reviewer": "ciso_ops"}
+        )
+        guid2 = database.fetch_recovery_guidance_by_incident(inc_id2)
+
+        # Ingest an event with a future timestamp BEFORE marking remediation applied
+        # In the old code, this would have re-fired because timestamp >= remediation_applied_at
+        pre_event_future_ts = {
+            "event_id": f"EV-FUTURE-{uuid.uuid4().hex[:6]}",
+            "timestamp": (now + timedelta(hours=1)).isoformat(),
+            "source": "downlink-engine",
+            "satellite_id": "SAT-FUTURE-02",
+            "event_type": "CROSS_MODULE_ATTACK",
+            "severity": "HIGH",
+            "confidence": 0.99,
+            "description": "Old event with future-dated timestamp",
+            "action": "REVIEW",
+            "evidence": {},
+            "related_events": [],
+            "operator_id": "OP-ROGUE",
+            "session_id": "SESS-ROGUE",
+        }
+        database.insert_event(pre_event_future_ts)
+
+        # Now mark remediation applied with a timestamp slightly in the future of the insert
+        now_applied = datetime.now(timezone.utc)
+        database.mark_remediation_applied(
+            guid2["guidance_id"],
+            reviewer="ciso_ops",
+            applied_at=(now_applied + timedelta(seconds=1)).isoformat()
+        )
+        # Mock window check by setting remediation_applied_at 60s in the past but keeping ingested_at in past
+        with database.get_connection() as conn:
+            conn.execute(
+                "UPDATE recovery_guidance SET remediation_applied_at = ? WHERE guidance_id = ?",
+                ((now_applied - timedelta(seconds=30)).isoformat(), guid2["guidance_id"])
+            )
+            # Set the pre_event ingested_at to 120s in the past (before remediation_applied_at)
+            conn.execute(
+                "UPDATE events SET ingested_at = ? WHERE event_id = ?",
+                ((now_applied - timedelta(seconds=120)).isoformat(), pre_event_future_ts["event_id"])
+            )
+
+        verif_resp2 = api_client.post(
+            f"/correlations/{inc_id2}/recovery-guidance/verify",
+            json={"reviewer": "ciso_verifier"}
+        )
+        assert verif_resp2.status_code == 200
+        # Should NOT count pre_event_future_ts as post-remediation evidence
+        assert verif_resp2.json()["verification_result"] == "AWAITING_TELEMETRY"
+        assert verif_resp2.json()["verification_result"] != "FAILED"
+
+    def test_verify_missing_reviewer_in_body_returns_422(self, api_client):
+        """Asserts that calling /verify without reviewer in the body returns HTTP 422 Unprocessable Entity."""
+        inc_id = "INC-TEST-NO-REVIEWER"
+
+        # Missing body completely
+        resp1 = api_client.post(f"/correlations/{inc_id}/recovery-guidance/verify")
+        assert resp1.status_code == 422
+
+        # Empty JSON body
+        resp2 = api_client.post(f"/correlations/{inc_id}/recovery-guidance/verify", json={})
+        assert resp2.status_code == 422
+
+        # Only query parameter passed (no body reviewer)
+        resp3 = api_client.post(
+            f"/correlations/{inc_id}/recovery-guidance/verify",
+            params={"reviewer": "ciso_param_only"}
+        )
+        assert resp3.status_code == 422
 

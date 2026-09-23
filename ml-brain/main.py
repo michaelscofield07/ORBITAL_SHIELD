@@ -43,7 +43,7 @@ from models.schemas import (
     CisoNoteRequest, CertInSummaryRequest,
     RecoveryGuidanceRecord, Model3RunRequest,
     Model3RunResponse, GuidanceReviewPayload,
-    GuidanceEditPayload, MarkAppliedPayload, VerificationResultResponse,
+    GuidanceEditPayload, MarkAppliedPayload, VerifyPayload, VerificationResultResponse,
     Model3StatusCounts, Model3StatusResponse,
     IncidentModel3StatusResponse,
     SourceModule, SeverityLevel, ActionType
@@ -917,20 +917,20 @@ Tests whether the incident's triggering correlation rule re-fires on telemetry r
 after remediation was applied. If rule re-fires, updates incident to VERIFICATION_FAILED.
 If rule does not re-fire, updates incident to RECTIFIED and logs the resolved pattern.
 Guards:
+- Requires human CISO attribution in request body (VerifyPayload: reviewer required, notes optional).
 - Rejects with HTTP 400 if /mark-applied has not yet been executed by the CISO.
 - Rejects with HTTP 409 if called before verification_min_window_seconds has elapsed.
     """
 )
 async def verify_incident_rectification(
     id: str,
-    reviewer: str = "ciso_verification",
-    notes: Optional[str] = None
+    payload: VerifyPayload,
 ):
     try:
         result = model3_recovery.verify_rectification(
             incident_id=id,
-            reviewer=reviewer,
-            notes=notes
+            reviewer=payload.reviewer,
+            notes=payload.notes
         )
         return VerificationResultResponse(**result)
     except model3_recovery.RemediationNotAppliedError as exc:
