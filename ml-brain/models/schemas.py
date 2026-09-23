@@ -314,13 +314,15 @@ class AuditEvent(BaseModel):
     event_id:       str
     timestamp:      datetime
     source:         str = "ML_BRAIN"
+    satellite_id:   Optional[str] = None
     event_type:     str
     severity:       str
     confidence:     float
     description:    str
-    related_events: List[str]
-    action:         str
+    related_events: List[str] = Field(default_factory=list)
+    action:         str = "HUMAN_REVIEW"
     risk_score:     int
+    evidence:       Dict[str, Any] = Field(default_factory=dict)
 
 
 # ─────────────────────────────────────────────────────────────

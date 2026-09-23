@@ -1150,7 +1150,10 @@ async def _forward_to_audit(incident: dict) -> None:
         with open(_CONFIG_PATH) as f:
             config = yaml.safe_load(f)
         audit_cfg = config.get("audit", {})
-        endpoint  = audit_cfg.get("endpoint", "http://localhost:8006/audit/events")
+        endpoint  = os.getenv(
+            "AUDIT_SERVICE_URL",
+            os.getenv("AUDIT_URL", audit_cfg.get("endpoint", "http://localhost:8006/audit/events"))
+        )
         timeout   = audit_cfg.get("timeout_seconds", 5)
         retries   = audit_cfg.get("max_retries", 3) if audit_cfg.get("retry_on_failure") else 1
 
@@ -1158,13 +1161,15 @@ async def _forward_to_audit(incident: dict) -> None:
             event_id=incident["event_id"],
             timestamp=incident["timestamp"],
             source="ML_BRAIN",
+            satellite_id=incident.get("satellite_id"),
             event_type=incident["event_type"],
             severity=incident["severity"],
             confidence=incident["confidence"],
             description=incident["description"],
-            related_events=incident["related_events"],
+            related_events=incident.get("related_events") or [],
             action=incident.get("action", "HUMAN_REVIEW"),
             risk_score=incident["risk_score"],
+            evidence={"risk_score": incident.get("risk_score"), "rule_name": incident.get("rule_name")},
         ).model_dump(mode="json")
 
         async with httpx.AsyncClient(timeout=timeout) as client:

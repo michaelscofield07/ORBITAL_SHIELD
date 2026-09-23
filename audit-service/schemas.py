@@ -26,6 +26,9 @@ class Action(str, Enum):
     MONITOR = "MONITOR"
     ALERT = "ALERT"
     LOG = "LOG"
+    FLAG = "FLAG"
+    QUARANTINE = "QUARANTINE"
+    BLOCK_ADVISORY = "BLOCK_ADVISORY"
 
 
 class SecurityEvent(BaseModel):
@@ -41,6 +44,11 @@ class SecurityEvent(BaseModel):
     action: Action
     evidence: dict = Field(default_factory=dict)
     related_events: List[str] = Field(default_factory=list)
+    operator_id: Optional[str] = None
+    session_id: Optional[str] = None
+    risk_score: Optional[int] = None
+
+    model_config = {"extra": "allow"}
 
 
 class AuditRecord(BaseModel):
