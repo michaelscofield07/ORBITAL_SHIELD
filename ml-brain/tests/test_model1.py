@@ -522,3 +522,396 @@ class TestModel1APIEndpoints:
         pat_resp = api_client.get("/patterns/historical")
         assert pat_resp.status_code == 200
         assert "matched_incidents" in pat_resp.json()
+
+
+# ─────────────────────────────────────────────────────────────
+# 8. TEST SUITE: First-Class CERT-In Integration & Reporting
+# ─────────────────────────────────────────────────────────────
+
+class TestCertInIntegration:
+    """
+    Verifies full CERT-In integration in Model 1:
+      1. Ingestion via POST /events/ingest with source="CERT_IN" and via POST /cert-in/summary
+      2. Normalization and canonical cert_in_info preservation
+      3. Authorization status evaluation for CERT-In events
+      4. Model 1 Understanding enriched with CERT-In intelligence in Markdown (Sections 1, 2, 5)
+      5. Forensic dossier isolation of unauthorized events alongside threat intelligence
+      6. GET /correlations/{id}/cert-in and GET /correlations/{id}/document API payload validation
+    """
+
+    def test_cert_in_event_ingest_and_normalization(self, api_client):
+        # Ingest CERT-In event directly through POST /events/ingest
+        cert_in_event = {
+            "event_id": "CERTIN-EVT-2026-001",
+            "timestamp": "2026-09-18T12:00:00Z",
+            "source": "CERT_IN",
+            "satellite_id": "SAT-GSAT-7A",
+            "event_type": "CERT_IN_ADVISORY",
+            "severity": "CRITICAL",
+            "confidence": 0.99,
+            "description": "CERT-In National Advisory: Critical unauthorized ground station command injection threat",
+            "action": "REVIEW",
+            "cert_in_reference": "CERTIN-ADV-2026-9041",
+            "title": "Unauthorized Ground Station Command Injection",
+            "threat_vectors": ["UNAUTHORIZED_COMMAND_INJECTION", "TELEMETRY_SPOOFING"],
+            "recommended_actions": ["Isolate ground terminal", "Invalidate active session tokens"],
+            "mandate_actions": ["Notify CERT-In within 6h"],
+            "cert_in_details": "Coordinated cyber probe targeting TT&C telemetry uplink",
+        }
+        resp = api_client.post("/events/ingest", json=cert_in_event)
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["status"] == "ACCEPTED"
+        assert data["event_id"] == "CERTIN-EVT-2026-001"
+
+        # Verify DB storage and cert_in_info extraction
+        advisories = database.fetch_cert_in_advisories(satellite_id="SAT-GSAT-7A")
+        assert len(advisories) >= 1
+        adv = next(a for a in advisories if a["event_id"] == "CERTIN-EVT-2026-001")
+        assert adv["source"] == "CERT_IN"
+        assert adv["cert_in_info"]["cert_in_reference"] == "CERTIN-ADV-2026-9041"
+        assert "UNAUTHORIZED_COMMAND_INJECTION" in adv["cert_in_info"]["threat_vectors"]
+        assert adv["authorization_status"] == "UNAUTHORIZED"
+
+    def test_cert_in_authorization_classification(self):
+        # Case A: Breach / unauthorized keyword -> UNAUTHORIZED
+        event_a = IncomingEvent(
+            event_id="CERTIN-A-01",
+            timestamp=datetime.now(timezone.utc),
+            source=SourceModule.CERT_IN,
+            satellite_id="SAT-01",
+            event_type="CERT_IN_ADVISORY",
+            severity="HIGH",
+            confidence=0.9,
+            description="CERT-In alert: Unauthorized credential compromise and intrusion detected",
+            action=ActionType.REVIEW,
+        )
+        norm_a = normalization.normalize_security_event(event_a)
+        assert norm_a["authorization_status"] == AuthorizationStatus.UNAUTHORIZED.value
+        assert "unauthorized" in norm_a["authorization_reason"].lower()
+
+        # Case B: High severity advisory without breach keyword -> SUSPICIOUS
+        event_b = IncomingEvent(
+            event_id="CERTIN-B-01",
+            timestamp=datetime.now(timezone.utc),
+            source=SourceModule.CERT_IN,
+            satellite_id="SAT-01",
+            event_type="CERT_IN_ADVISORY",
+            severity="HIGH",
+            confidence=0.9,
+            description="CERT-In vulnerability notice: Potential signal interference vulnerability",
+            action=ActionType.REVIEW,
+        )
+        norm_b = normalization.normalize_security_event(event_b)
+        assert norm_b["authorization_status"] == AuthorizationStatus.SUSPICIOUS.value
+
+    def test_cert_in_in_model1_understanding_and_markdown(self):
+        # Construct incident and contributing events
+        incident = {
+            "event_id": "INC-CERTIN-TEST-01",
+            "timestamp": "2026-09-18T12:30:00Z",
+            "satellite_id": "SAT-ORBITAL-01",
+            "event_type": "CROSS_MODULE_ATTACK",
+            "severity": "CRITICAL",
+            "confidence": 0.95,
+            "risk_score": 140,
+            "rule_id": "RULE_001",
+            "rule_name": "cross_module_same_session",
+            "rule_score": 100,
+            "related_events": ["EVT-ACT-01", "EVT-CMD-01", "CERTIN-ADV-01"],
+            "description": "Multi-stage attack with correlated CERT-In advisory",
+        }
+
+        contributing_events = [
+            {
+                "event_id": "EVT-ACT-01",
+                "timestamp": "2026-09-18T12:20:00Z",
+                "source": "ACCESS",
+                "satellite_id": "SAT-ORBITAL-01",
+                "event_type": "ACCESS_VIOLATION",
+                "severity": "HIGH",
+                "actor": "OP-ROGUE",
+                "operator_id": "OP-ROGUE",
+                "session_id": "S-ROGUE-01",
+                "resource": "OBC_TELEMETRY_BUS",
+                "authorization_status": "UNAUTHORIZED",
+                "authorization_reason": "Operator outside authorized boundary",
+                "description": "Access violation on OBC bus",
+            },
+            {
+                "event_id": "EVT-CMD-01",
+                "timestamp": "2026-09-18T12:22:00Z",
+                "source": "UPLINK",
+                "satellite_id": "SAT-ORBITAL-01",
+                "event_type": "UNAUTHORIZED_COMMAND",
+                "severity": "CRITICAL",
+                "actor": "OP-ROGUE",
+                "operator_id": "OP-ROGUE",
+                "session_id": "S-ROGUE-01",
+                "resource": "ATTITUDE_THRUSTER",
+                "authorization_status": "UNAUTHORIZED",
+                "authorization_reason": "Dual authorization missing",
+                "description": "Unauthorized attitude adjustment command",
+            },
+            {
+                "event_id": "CERTIN-ADV-01",
+                "timestamp": "2026-09-18T12:25:00Z",
+                "source": "CERT_IN",
+                "satellite_id": "SAT-ORBITAL-01",
+                "event_type": "CERT_IN_ADVISORY",
+                "severity": "CRITICAL",
+                "actor": "CERT_IN_DESK",
+                "operator_id": "CERT_IN_DESK",
+                "authorization_status": "UNAUTHORIZED",
+                "authorization_reason": "CERT-In advisory flagged unauthorized threat",
+                "description": "CERT-In Advisory ADV-2026-8801: Active threat campaign targeting satellite TT&C",
+                "cert_in_info": {
+                    "cert_in_reference": "CERTIN-ADV-2026-8801",
+                    "title": "Active TT&C Ground Cyber Threat",
+                    "threat_vectors": ["UNAUTHORIZED_UPLINK_COMMAND", "SESSION_HIJACKING"],
+                    "recommended_actions": ["Emergency uplink freeze", "Dual-key authorization enforcement"],
+                    "mandate_actions": ["Submit 6-Hour preliminary report to CERT-In"],
+                }
+            }
+        ]
+
+        enriched = model1_understanding.understand_incident(incident, contributing_events)
+
+        # 1. cert_in_context populated
+        ctx = enriched["cert_in_context"]
+        assert ctx["has_advisory"] is True
+        assert "CERTIN-ADV-2026-8801" in ctx["references"]
+        assert "UNAUTHORIZED_UPLINK_COMMAND" in ctx["threat_vectors"]
+        assert "Emergency uplink freeze" in ctx["recommended_actions"]
+
+        # 2. Forensic dossier isolates primary unauthorized events vs intelligence
+        chain = enriched["unauthorized_chain"]
+        primary = [s for s in chain if s["chain_role"] == "PRIMARY_UNAUTHORIZED_ACTIVITY"]
+        intel = [s for s in chain if s["chain_role"] == "EXTERNAL_THREAT_INTELLIGENCE"]
+        assert len(primary) == 2  # ACCESS_VIOLATION and UNAUTHORIZED_COMMAND
+        assert len(intel) == 1    # CERT-In advisory
+
+        # 3. Markdown content verification
+        doc = enriched["incident_document_md"]
+        assert "CERTIN-ADV-2026-8801" in doc
+        assert "CERT-In Threat Advisory Intelligence" in doc
+        assert "Emergency uplink freeze" in doc
+        assert "EXTERNAL_THREAT_INTELLIGENCE" in doc
+        assert "CERT-In Intelligence Advisory (CERTIN-ADV-2026-8801)" in doc
+        assert "CERT-In 6-HOUR COMPLIANCE & REGULATORY AUDIT REPORT" in doc
+        assert "Correlated CERT-In Advisory Reference(s):** `CERTIN-ADV-2026-8801`" in doc
+
+        # 4. CERT-In compliance report verification
+        report = enriched["cert_in_report"]
+        assert "CERTIN-ADV-2026-8801" in report["matched_advisories"]
+        assert "UNAUTHORIZED_UPLINK_COMMAND" in report["matched_threat_vectors"]
+        assert "Emergency uplink freeze" in report["recommended_remediation_actions"]
+
+    def test_cert_in_summary_api_and_incident_refresh(self, api_client):
+        # 1. Ingest normal events creating an incident
+        base = datetime.now(timezone.utc)
+        events = [
+            {
+                "event_id": "EVT-C-01",
+                "timestamp": (base - timedelta(seconds=60)).isoformat(),
+                "source": "ACCESS", "satellite_id": "SAT-MEGHAT-01",
+                "event_type": "ACCESS_VIOLATION", "severity": "HIGH",
+                "confidence": 0.9, "description": "Unauthorized access to telemetry module",
+                "action": "FLAG", "evidence": {}, "related_events": [],
+                "operator_id": "OP-TEST-01", "session_id": "S-CERT-TEST",
+            },
+            {
+                "event_id": "EVT-C-02",
+                "timestamp": base.isoformat(),
+                "source": "UPLINK", "satellite_id": "SAT-MEGHAT-01",
+                "event_type": "UNAUTHORIZED_COMMAND", "severity": "HIGH",
+                "confidence": 0.95, "description": "Unauthorized payload test command",
+                "action": "BLOCK_ADVISORY", "evidence": {}, "related_events": [],
+                "operator_id": "OP-TEST-01", "session_id": "S-CERT-TEST",
+            }
+        ]
+        for ev in events:
+            r = api_client.post("/events/ingest", json=ev)
+            assert r.status_code == 201
+
+        # Fetch active incident
+        corr_resp = api_client.get("/correlations/active")
+        assert corr_resp.status_code == 200
+        incidents = corr_resp.json()
+        assert len(incidents) >= 1
+        inc_id = incidents[0]["event_id"]
+
+        # 2. Ingest CERT-In summary referencing this incident
+        summary_payload = {
+            "incident_id": inc_id,
+            "satellite_id": "SAT-MEGHAT-01",
+            "cert_in_reference": "CERTIN-ADV-2026-MEGHAT",
+            "title": "Targeted Space Ground Telemetry Exploit",
+            "summary": "Confirmed external exploitation campaign targeting GS telemetry channels",
+            "severity": "CRITICAL",
+            "threat_vectors": ["GROUND_COMMAND_INJECTION", "TELEMETRY_OVERRIDE"],
+            "recommended_actions": ["Terminate active uplink sessions", "Enable MAC verification on all frames"],
+            "mandate_actions": ["Dispatch statutory notification under Rule 12"],
+        }
+        sum_resp = api_client.post("/cert-in/summary", json=summary_payload)
+        assert sum_resp.status_code == 201
+
+        # 3. Verify GET /correlations/{id}/document has updated CERT-In context
+        doc_resp = api_client.get(f"/correlations/{inc_id}/document")
+        assert doc_resp.status_code == 200
+        doc_json = doc_resp.json()
+        assert "cert_in_context" in doc_json
+        assert doc_json["cert_in_context"]["has_advisory"] is True
+        assert "CERTIN-ADV-2026-MEGHAT" in doc_json["cert_in_context"]["references"]
+        assert "CERTIN-ADV-2026-MEGHAT" in doc_json["incident_document_md"]
+
+        # 4. Verify GET /correlations/{id}/cert-in has updated CERT-In fields
+        cert_resp = api_client.get(f"/correlations/{inc_id}/cert-in")
+        assert cert_resp.status_code == 200
+        cert_json = cert_resp.json()
+        assert "CERTIN-ADV-2026-MEGHAT" in cert_json["matched_advisories"]
+        assert "GROUND_COMMAND_INJECTION" in cert_json["matched_threat_vectors"]
+        assert "Terminate active uplink sessions" in cert_json["recommended_remediation_actions"]
+
+
+# ─────────────────────────────────────────────────────────────
+# 9. TEST SUITE: Model 1 Verification Gaps & Edge Cases
+# ─────────────────────────────────────────────────────────────
+
+class TestModel1CoverageGaps:
+    """Verifies edge cases identified in verification audit for Model 1."""
+
+    def test_authorized_classification_with_rationale(self):
+        """Asserts that engine classifies as AUTHORIZED when contributing events are routine operations."""
+        incident = {
+            "event_id": "INC-AUTH-001",
+            "timestamp": "2026-09-18T14:00:00Z",
+            "rule_id": "RULE_001",
+            "rule_name": "Cross-Module Session Correlation",
+            "event_type": "OPERATIONAL_CORRELATION",
+            "severity": "INFO",
+            "risk_score": 15,
+            "satellite_id": "SAT-ROUTINE-01",
+        }
+        contributing = [
+            {
+                "event_id": "E-AUTH-1",
+                "timestamp": "2026-09-18T13:58:00Z",
+                "source": "DOWNLINK",
+                "event_type": "TELEMETRY_LOG",
+                "severity": "INFO",
+                "action": "LOG",
+                "authorization_status": "AUTHORIZED",
+                "operator_id": "mission_ops",
+            },
+            {
+                "event_id": "E-AUTH-2",
+                "timestamp": "2026-09-18T13:59:00Z",
+                "source": "UPLINK",
+                "event_type": "SCHEDULED_TELECOMMAND",
+                "severity": "INFO",
+                "action": "LOG",
+                "authorization_status": "AUTHORIZED",
+                "operator_id": "mission_ops",
+            },
+        ]
+        enriched = model1_understanding.understand_incident(incident, contributing)
+        assert enriched["authorization_status"] == AuthorizationStatus.AUTHORIZED.value
+        assert "AUTHORIZED" in enriched["authorization_reason"]
+        assert "normal operational parameters" in enriched["authorization_reason"]
+
+    def test_unknown_authorization_status_handling(self):
+        """Verifies normalization and understanding of UNKNOWN authorization status."""
+        raw = {
+            "event_id": "EVT-UNK-001",
+            "timestamp": "2026-09-18T14:10:00Z",
+            "source": "DOWNLINK",
+            "satellite_id": "SAT-TEST-01",
+            "event_type": "TELEMETRY_ANOMALY",
+            "severity": "MEDIUM",
+            "confidence": 0.70,
+            "description": "Anomalous thermal sensor deviation with missing header auth",
+            "action": "MONITOR",
+            "authorization_status": "UNKNOWN",
+        }
+        event = IncomingEvent(**raw)
+        norm = normalization.normalize_security_event(event)
+        assert norm["authorization_status"] == AuthorizationStatus.UNKNOWN.value
+
+        incident = {
+            "event_id": "INC-UNK-001",
+            "timestamp": "2026-09-18T14:12:00Z",
+            "rule_id": "RULE_002",
+            "rule_name": "Escalating Severity Anomaly Pattern",
+            "event_type": "SUSPICIOUS_ACTIVITY",
+            "severity": "MEDIUM",
+            "risk_score": 50,
+        }
+        enriched = model1_understanding.understand_incident(incident, [norm])
+        assert enriched["authorization_status"] == AuthorizationStatus.SUSPICIOUS.value
+        assert "SUSPICIOUS" in enriched["authorization_reason"]
+
+    def test_cert_in_report_zero_related_events(self, api_client):
+        """Asserts that CERT-In report generates cleanly when incident has zero related events."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        inc_id = "INC-ZERO-EVTS"
+        inc = {
+            "event_id": inc_id,
+            "timestamp": now_iso,
+            "source": "ML_BRAIN",
+            "event_type": "SECURITY_INCIDENT",
+            "severity": "LOW",
+            "confidence": 0.60,
+            "description": "Correlated anomaly without populated events",
+            "related_events": [],
+            "action": "HUMAN_REVIEW",
+            "risk_score": 30,
+            "rule_id": "RULE-001",
+            "rule_name": "Isolated Alert",
+            "satellite_id": "SAT-ZERO-01",
+            "status": "OPEN",
+            "created_at": now_iso,
+        }
+        database.insert_incident(inc)
+
+        resp = api_client.get(f"/correlations/{inc_id}/cert-in")
+        assert resp.status_code == 200
+        report = resp.json()
+        assert report["incident_id"] == inc_id
+        assert report["cert_in_regulatory_window_hours"] == 6
+        assert report["affected_entity_type"] is not None
+
+    def test_cert_in_report_nonexistent_incident_returns_404(self, api_client):
+        """Asserts HTTP 404 when querying CERT-In report for an unknown incident."""
+        resp = api_client.get("/correlations/INC-DOES-NOT-EXIST-404/cert-in")
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"].lower()
+
+    def test_incident_document_missing_optional_fields(self, api_client):
+        """Verifies markdown report formatting doesn't fail when optional fields are omitted."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        inc_id = "INC-SPARSE-001"
+        inc = {
+            "event_id": inc_id,
+            "timestamp": now_iso,
+            "source": "ML_BRAIN",
+            "event_type": "SECURITY_INCIDENT",
+            "severity": "HIGH",
+            "confidence": 0.85,
+            "description": "Sparse incident missing optional fields",
+            "related_events": [],
+            "action": "HUMAN_REVIEW",
+            "risk_score": 70,
+            "status": "OPEN",
+            "created_at": now_iso,
+        }
+        database.insert_incident(inc)
+
+        resp = api_client.get(f"/correlations/{inc_id}/document")
+        assert resp.status_code == 200
+        doc = resp.json()
+        assert doc["incident_id"] == inc_id
+        assert len(doc["incident_document_md"]) > 100
+        assert "INCIDENT UNDERSTANDING & FORENSIC DOSSIER" in doc["incident_document_md"]
+
+

@@ -13,7 +13,7 @@ Do NOT change field names without coordinating with the team.
 from __future__ import annotations
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, Field, field_validator, model_validator
 import uuid
 
@@ -37,6 +37,8 @@ class AuthorizationStatus(str, Enum):
     UNAUTHORIZED       = "UNAUTHORIZED"
     SUSPICIOUS         = "SUSPICIOUS"          # requires verification
     VERIFIED_RECTIFIED = "VERIFIED_RECTIFIED"  # verified by CISO or historical baseline
+    UNKNOWN            = "UNKNOWN"             # credentials or context absent from telemetry
+
 
 
 class SeverityLevel(str, Enum):
@@ -116,6 +118,14 @@ class IncomingEvent(BaseModel):
     packet_info:          Optional[Dict[str, Any]] = Field(default_factory=dict, description="Command packet/request info")
     raw_log:              Optional[Dict[str, Any]] = Field(default_factory=dict, description="Original raw event payload untouched")
     ciso_notes:           Optional[str]  = Field(None, description="CISO feedback or observations")
+
+    # First-class CERT-In advisory and threat intelligence extensions
+    cert_in_reference:   Optional[str]  = Field(None, description="CERT-In advisory reference identifier (e.g. CERTIN-ADV-2026-0881)")
+    title:               Optional[str]  = Field(None, description="Advisory or summary title")
+    threat_vectors:      Optional[List[str]] = Field(default_factory=list, description="Threat vectors identified by CERT-In")
+    recommended_actions: Optional[List[str]] = Field(default_factory=list, description="Recommended remediation actions from CERT-In")
+    mandate_actions:     Optional[List[str]] = Field(default_factory=list, description="Mandated regulatory actions from CERT-In")
+    cert_in_details:     Optional[Union[Dict[str, Any], str]] = Field(default=None, description="Structured CERT-In advisory payload or text details")
 
     @field_validator("event_id")
     @classmethod
@@ -328,6 +338,7 @@ class IncidentDocumentResponse(BaseModel):
     data_access_summary:         Dict[str, Any]
     historical_comparison:       Dict[str, Any]
     cert_in_compliance:          Dict[str, Any]
+    cert_in_context:             Optional[Dict[str, Any]] = Field(default_factory=dict, description="Structured CERT-In advisory context and threat intelligence")
 
 
 class CisoNoteRequest(BaseModel):
@@ -352,4 +363,130 @@ class CertInSummaryRequest(BaseModel):
     threat_vectors:              List[str] = Field(default_factory=list)
     recommended_actions:         List[str] = Field(default_factory=list)
     mandate_actions:             List[str] = Field(default_factory=list)
+
+
+# ─────────────────────────────────────────────────────────────
+# MODEL 3 — RETRAIN + SECURE & RECOVERY GUIDANCE SCHEMAS
+# ─────────────────────────────────────────────────────────────
+
+class SecureAndRecoverGuidance(BaseModel):
+    """
+    Validated advisory output produced by Model 3 LLM or deterministic fallback.
+    Never applied automatically; strictly advisory recommendations for the CISO.
+    """
+    affected_domain:             str = Field(..., description="Primary affected security domain (DOWNLINK, UPLINK, FIRMWARE, ACCESS, MULTI_DOMAIN)")
+    isolation_summary:           str = Field(..., description="Brief summary of required isolation boundaries")
+    secure_actions:              List[str] = Field(..., description="Actionable immediate containment and defense steps")
+    recovery_actions:            List[str] = Field(..., description="Step-by-step restoration and operational recovery actions")
+    verification_steps:          List[str] = Field(..., description="Verification procedures to validate system health post-recovery")
+    residual_risk:               str = Field(..., description="Assessment of residual threat level after actions (LOW, MEDIUM, HIGH)")
+    confidence:                  str = Field(..., description="Model confidence level (LOW, MEDIUM, HIGH)")
+    rationale:                   str = Field(..., description="Technical justification and reasoning behind the guidance")
+
+
+class RecoveryGuidanceRecord(BaseModel):
+    """
+    Persisted Model 3 guidance record from the recovery_guidance database table.
+    """
+    guidance_id:                 str
+    incident_id:                 str
+    generated_at:                str
+    model_used:                  str
+    llm_used:                    bool
+    guidance:                    Dict[str, Any]
+    review_status:               str = "PENDING_REVIEW"
+    reviewed_by:                 Optional[str] = None
+    review_notes:                Optional[str] = None
+    reviewed_at:                 Optional[str] = None
+    ciso_edited:                 Optional[Dict[str, Any]] = None
+    edited_by:                   Optional[str] = None
+    edited_at:                   Optional[str] = None
+    remediation_applied_at:      Optional[str] = None
+    remediation_applied_by:      Optional[str] = None
+    remediation_notes:           Optional[str] = None
+    verification_result:         Optional[str] = None
+    verified_at:                 Optional[str] = None
+    verification_evidence:       Optional[Dict[str, Any]] = None
+
+
+class Model3RunRequest(BaseModel):
+    """Payload to trigger the Model 3 pipeline."""
+    incident_ids:                Optional[List[str]] = Field(None, description="Optional list of specific incident IDs to process. Defaults to all OPEN incidents.")
+    run_retrain:                 bool = Field(True, description="Whether to execute the existing retrain job prior to generating guidance.")
+
+
+class Model3RunResponse(BaseModel):
+    """Response returned after running the Model 3 pipeline."""
+    status:                      str
+    retrain_result:              Optional[Dict[str, Any]] = None
+    guidance_count:              int
+    guidance_records:            List[RecoveryGuidanceRecord]
+    message:                     str
+
+
+class GuidanceReviewPayload(BaseModel):
+    """Payload for CISO review (acceptance or dismissal) of generated recovery guidance."""
+    review_status:               str = Field(..., description="Verdict: ACCEPTED or DISMISSED")
+    reviewer:                    str = Field(..., description="CISO / Analyst reviewer identifier")
+    notes:                       Optional[str] = Field(None, description="Operational notes or justification")
+
+
+class GuidanceEditPayload(BaseModel):
+    """Payload for CISO to submit an edited version of the recovery guidance."""
+    reviewer:                    str = Field(..., description="CISO / Analyst reviewer identifier")
+    secure_actions:              List[str] = Field(default_factory=list, description="CISO-curated containment and defense steps")
+    recovery_actions:            List[str] = Field(default_factory=list, description="CISO-curated operational recovery actions")
+    verification_steps:          List[str] = Field(default_factory=list, description="CISO-curated post-recovery verification procedures")
+    notes:                       Optional[str] = Field(None, description="Operational notes or reasoning for edits")
+
+
+
+class MarkAppliedPayload(BaseModel):
+    """Payload for CISO to confirm that remediation actions have been executed outside this system."""
+    reviewer:                    str = Field(..., description="CISO / Operator identity who applied the remediation")
+    notes:                       Optional[str] = Field(None, description="Operational notes detailing actions taken or ground changes made")
+
+
+class VerificationResultResponse(BaseModel):
+    """Response returned after running breach-rectification verification."""
+    incident_id:                 str
+    verification_result:         str = Field(..., description="Outcome: PASSED or FAILED")
+    verified_at:                 str
+    status_updated_to:           str
+    evidence_summary:            Dict[str, Any]
+    message:                     str
+
+
+class Model3StatusCounts(BaseModel):
+    """Breakdown of guidance records and incidents by lifecycle status."""
+    pending_review:              int
+    edited:                      int
+    accepted:                    int
+    remediation_applied:         int = 0
+    dismissed:                   int
+    awaiting_verification:        int
+    rectified:                   int
+    verification_failed:         int
+
+
+class Model3StatusResponse(BaseModel):
+    """Live status of Model 3 engine, LLM availability, and workflow metrics."""
+    llm_reachable:               bool
+    last_model_used:             str
+    counts:                      Model3StatusCounts
+    last_run_at:                 Optional[str] = None
+    active_incident_count:       int
+
+
+class IncidentModel3StatusResponse(BaseModel):
+    """Stepper progress for a specific incident through the Model 3 lifecycle."""
+    incident_id:                 str
+    guidance_id:                 Optional[str] = None
+    current_stage:               str = Field(..., description="DETECTED | CORRELATED | GUIDANCE_GENERATED | CISO_REVIEWED | REMEDIATION_APPLIED | RECTIFIED | VERIFICATION_FAILED")
+    model_used:                  Optional[str] = None
+    llm_used:                    Optional[bool] = None
+    review_status:               Optional[str] = None
+    verification_result:         Optional[str] = None
+    timestamps:                  Dict[str, Optional[str]]
+
 

@@ -194,3 +194,14 @@ audit:
   timeout_seconds: 5
   retry_on_failure: true
   max_retries: 3
+
+model3:
+  ollama_host: http://localhost:11434
+  primary_model: deepseek-r1:14b
+  fallback_model: qwen3:14b
+  timeout_seconds: 180
+  max_open_incidents_to_process: 10
+  # Minimum time observation window post-remediation before verification is allowed.
+  # Set to 15s for interactive demo evaluation; real production deployments should be 300-3600s.
+  verification_min_window_seconds: 15
+

@@ -15,9 +15,11 @@ Design: advisory-only, no enforcement logic anywhere in this service.
 """
 
 import asyncio
+import json
 import logging
 import sys
 import time
+import uuid
 import httpx
 import yaml
 from contextlib import asynccontextmanager
@@ -37,12 +39,18 @@ from models.schemas import (
     BrainStatus, RuleStatus, RetrainResponse,
     AuditEvent, IncidentDocumentResponse,
     CisoNoteRequest, CertInSummaryRequest,
+    RecoveryGuidanceRecord, Model3RunRequest,
+    Model3RunResponse, GuidanceReviewPayload,
+    GuidanceEditPayload, MarkAppliedPayload, VerificationResultResponse,
+    Model3StatusCounts, Model3StatusResponse,
+    IncidentModel3StatusResponse,
     SourceModule, SeverityLevel, ActionType
 )
 from db import database as db
 from core import (
     ingestion, correlation_engine, scoring, ml_refiner,
-    feedback as fb_module, model1_understanding, normalization
+    feedback as fb_module, model1_understanding, normalization,
+    model3_recovery, llm_client
 )
 
 # ─────────────────────────────────────────────────────────────
@@ -86,6 +94,9 @@ async def lifespan(app: FastAPI):
     # 3. Attempt ML model load (transparent no-op if no model exists)
     ml_loaded = ml_refiner.load_model()
     logger.info("ML refiner active: %s", ml_loaded)
+
+    # 4. Asynchronous background model warmup (loads weights into VRAM before demo queries)
+    asyncio.create_task(llm_client.warmup_models_async())
 
     logger.info("ML Correlation Brain is READY. Swagger docs at /docs")
     logger.info("ADVISORY ONLY — this module has zero enforcement authority.")
@@ -212,8 +223,9 @@ async def ingest_event(event: IncomingEvent, background_tasks: BackgroundTasks):
                     incident["severity"], incident["risk_score"],
                     incident.get("authorization_status"))
 
-        # Forward to audit module in background (non-blocking)
-        background_tasks.add_task(_forward_to_audit, incident)
+        # Forward to audit module in background (detached non-blocking task)
+        # Never blocks event ingestion response even if port 8006 is offline
+        asyncio.create_task(_forward_to_audit(incident))
 
     return IngestResponse(
         status="ACCEPTED",
@@ -350,6 +362,7 @@ async def get_incident_document(incident_id: str):
         data_access_summary=incident.get("data_access_summary", {}),
         historical_comparison=incident.get("historical_pattern_details", {}),
         cert_in_compliance=incident.get("cert_in_report", {}),
+        cert_in_context=incident.get("cert_in_context", {}),
     )
 
 
@@ -441,13 +454,37 @@ async def ingest_cert_in_summary(payload: CertInSummaryRequest, background_tasks
         confidence=0.95,
         description=f"{title}: {details}",
         action=ActionType.REVIEW,
+        cert_in_reference=payload.cert_in_reference or summary_id,
+        title=title,
+        threat_vectors=payload.threat_vectors or [],
+        recommended_actions=actions or [],
+        mandate_actions=payload.mandate_actions or [],
+        cert_in_details=details,
+        related_events=[payload.incident_id] if payload.incident_id else [],
         evidence={
-            "threat_vectors": payload.threat_vectors,
-            "recommended_actions": actions,
+            "cert_in_reference": payload.cert_in_reference or summary_id,
+            "title": title,
+            "threat_vectors": payload.threat_vectors or [],
+            "recommended_actions": actions or [],
             "incident_id": payload.incident_id,
         },
     )
-    return await ingest_event(cert_event, background_tasks)
+    ingest_res = await ingest_event(cert_event, background_tasks)
+
+    # If linked to an existing incident, immediately refresh that incident's Model 1 understanding
+    if payload.incident_id:
+        inc = db.fetch_incident_by_id(payload.incident_id)
+        if inc:
+            raw_events = []
+            with db.get_connection() as conn:
+                for eid in inc.get("related_events", []):
+                    row = conn.execute("SELECT * FROM events WHERE event_id=?", (eid,)).fetchone()
+                    if row:
+                        raw_events.append(db._row_to_dict(row))
+            updated_inc = model1_understanding.understand_incident(inc, raw_events)
+            db.insert_incident(updated_inc)
+
+    return ingest_res
 
 
 # ─────────────────────────────────────────────────────────────
@@ -589,6 +626,376 @@ No unsupervised, autonomous learning ever happens.
 async def trigger_retrain():
     result = fb_module.run_retrain_job()
     return RetrainResponse(**result)
+
+
+# ─────────────────────────────────────────────────────────────
+# ROUTE 6B: Model 3 — Retrain + Secure & Recover Guidance Pipeline
+# ─────────────────────────────────────────────────────────────
+
+@app.post(
+    "/brain/model3/run",
+    response_model=Model3RunResponse,
+    tags=["Model 3 Secure & Recover Guidance"],
+    summary="Execute Model 3: Retrain + Secure & Recover Guidance Pipeline",
+    description="""
+Executes the unified Model 3 workflow:
+1. Runs the human-in-the-loop retraining cycle (threshold adjustment + ML refiner model update).
+2. Generates actionable Secure & Recover Guidance for specified or active incidents via local Ollama LLMs (DeepSeek-R1 / Qwen2.5) with automatic deterministic fallback.
+3. Persists each generated guidance plan with review_status='PENDING_REVIEW'.
+    """
+)
+async def run_model3_pipeline_endpoint(payload: Optional[Model3RunRequest] = None):
+    p = payload or Model3RunRequest()
+    result = model3_recovery.run_model3_pipeline(
+        incident_ids=p.incident_ids,
+        run_retrain=p.run_retrain
+    )
+    return Model3RunResponse(**result)
+
+
+def _format_guidance_record(row: dict) -> RecoveryGuidanceRecord:
+    """Helper to convert a recovery_guidance database row to RecoveryGuidanceRecord."""
+    guidance_dict = (
+        json.loads(row["guidance_json"])
+        if isinstance(row.get("guidance_json"), str)
+        else row.get("guidance_json", {})
+    )
+    return RecoveryGuidanceRecord(
+        guidance_id=row["guidance_id"],
+        incident_id=row["incident_id"],
+        generated_at=row["generated_at"],
+        model_used=row["model_used"],
+        llm_used=bool(row.get("llm_used")),
+        guidance=guidance_dict,
+        review_status=row.get("review_status", "PENDING_REVIEW"),
+        reviewed_by=row.get("reviewed_by"),
+        review_notes=row.get("review_notes"),
+        reviewed_at=row.get("reviewed_at"),
+        ciso_edited=row.get("ciso_edited"),
+        edited_by=row.get("edited_by"),
+        edited_at=row.get("edited_at"),
+        remediation_applied_at=row.get("remediation_applied_at"),
+        remediation_applied_by=row.get("remediation_applied_by"),
+        remediation_notes=row.get("remediation_notes"),
+        verification_result=row.get("verification_result"),
+        verified_at=row.get("verified_at"),
+        verification_evidence=row.get("verification_evidence"),
+    )
+
+
+@app.get(
+    "/correlations/{id}/recovery-guidance",
+    response_model=RecoveryGuidanceRecord,
+    tags=["Model 3 Secure & Recover Guidance"],
+    summary="Get or generate Secure & Recover Guidance for an incident",
+    description="""
+Returns existing recovery guidance for the incident. If no guidance has been
+generated yet, dynamically runs the Model 3 guidance generator, persists
+the resulting plan as PENDING_REVIEW, and returns it.
+    """
+)
+async def get_incident_recovery_guidance(id: str):
+    inc = db.fetch_incident_by_id(id)
+    if not inc:
+        raise HTTPException(status_code=404, detail=f"Incident {id} not found")
+
+    existing = db.fetch_recovery_guidance_by_incident(id)
+    if existing:
+        return _format_guidance_record(existing)
+
+    # Dynamic generation if not yet created
+    raw_events = []
+    with db.get_connection() as conn:
+        for eid in inc.get("related_events", []):
+            row = conn.execute("SELECT * FROM events WHERE event_id=?", (eid,)).fetchone()
+            if row:
+                raw_events.append(db._row_to_dict(row))
+
+    guidance_dict, model_used, llm_used = model3_recovery.generate_recovery_guidance(
+        incident=inc,
+        events=raw_events
+    )
+
+    guidance_id = f"GUIDE-{uuid.uuid4().hex[:8].upper()}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    record = {
+        "guidance_id": guidance_id,
+        "incident_id": id,
+        "generated_at": now_iso,
+        "model_used": model_used,
+        "llm_used": llm_used,
+        "guidance_json": guidance_dict,
+        "review_status": "PENDING_REVIEW",
+        "reviewed_by": None,
+        "review_notes": None,
+        "reviewed_at": None,
+        "ciso_edited_json": None,
+        "edited_by": None,
+        "edited_at": None,
+        "verification_result": None,
+        "verified_at": None,
+        "verification_evidence_json": None,
+    }
+    db.insert_recovery_guidance(record)
+
+    created = db.fetch_recovery_guidance_by_id(guidance_id)
+    return _format_guidance_record(created or record)
+
+
+@app.post(
+    "/correlations/{id}/recovery-guidance/review",
+    response_model=RecoveryGuidanceRecord,
+    tags=["Model 3 Secure & Recover Guidance"],
+    summary="Submit CISO review verdict on recovery guidance",
+    description="""
+Allows the CISO to ACCEPT or DISMISS advisory recovery guidance for an incident.
+Ensures that no recovery action is ever taken automatically without explicit human sign-off.
+    """
+)
+async def review_incident_recovery_guidance(id: str, payload: GuidanceReviewPayload):
+    if payload.review_status not in ("ACCEPTED", "DISMISSED"):
+        raise HTTPException(
+            status_code=400,
+            detail="review_status must be either 'ACCEPTED' or 'DISMISSED'"
+        )
+
+    existing = db.fetch_recovery_guidance_by_incident(id)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"No recovery guidance found for incident {id}")
+
+    if existing.get("review_status") in ("REMEDIATION_APPLIED", "RECTIFIED", "VERIFICATION_FAILED"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot review guidance in terminal state '{existing.get('review_status')}'."
+        )
+
+
+    db.update_recovery_guidance_review(
+        guidance_id=existing["guidance_id"],
+        review_status=payload.review_status,
+        reviewed_by=payload.reviewer,
+        review_notes=payload.notes,
+    )
+
+    updated = db.fetch_recovery_guidance_by_id(existing["guidance_id"])
+    return _format_guidance_record(updated)
+
+
+@app.put(
+    "/correlations/{id}/recovery-guidance/edit",
+    response_model=RecoveryGuidanceRecord,
+    tags=["Model 3 Secure & Recover Guidance"],
+    summary="Submit CISO edits to the recovery guidance plan",
+    description="""
+Enables the CISO to edit, refine, and approve the recovery plan before manual execution.
+Preserves the original LLM guidance in `guidance` while saving human-curated actions in `ciso_edited`.
+Sets `review_status` to 'EDITED'.
+    """
+)
+async def edit_incident_recovery_guidance(id: str, payload: GuidanceEditPayload):
+    inc = db.fetch_incident_by_id(id)
+    if not inc:
+        raise HTTPException(status_code=404, detail=f"Incident {id} not found")
+
+    existing = db.fetch_recovery_guidance_by_incident(id)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"No recovery guidance found for incident {id}")
+
+    if not payload.secure_actions and not payload.recovery_actions:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot save empty guidance plan: at least one secure or recovery action must be provided."
+        )
+
+    curr_status = existing.get("review_status")
+    if curr_status == "DISMISSED":
+        raise HTTPException(status_code=400, detail="Cannot edit dismissed recovery guidance.")
+    if curr_status in ("REMEDIATION_APPLIED", "RECTIFIED", "VERIFICATION_FAILED"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot edit guidance in state '{curr_status}': remediation workflow already initiated."
+        )
+
+    edited_content = {
+
+        "secure_actions": payload.secure_actions,
+        "recovery_actions": payload.recovery_actions,
+        "verification_steps": payload.verification_steps,
+        "edited_by": payload.reviewer,
+        "notes": payload.notes,
+    }
+
+    db.update_recovery_guidance_edit(
+        guidance_id=existing["guidance_id"],
+        edited_guidance=edited_content,
+        reviewer=payload.reviewer,
+        notes=payload.notes,
+    )
+
+    updated = db.fetch_recovery_guidance_by_id(existing["guidance_id"])
+    return _format_guidance_record(updated)
+
+
+@app.post(
+    "/correlations/{id}/recovery-guidance/mark-applied",
+    response_model=RecoveryGuidanceRecord,
+    tags=["Model 3 Secure & Recover Guidance"],
+    summary="Confirm that CISO/operator applied remediation outside the system",
+    description="""
+Explicitly records that the human CISO has executed remediation actions in the real world.
+Sets review_status to REMEDIATION_APPLIED and records remediation_applied_at timestamp.
+Must be called before /verify is permitted. Requires prior ACCEPTED or EDITED status.
+    """
+)
+async def mark_incident_remediation_applied(id: str, payload: MarkAppliedPayload):
+    inc = db.fetch_incident_by_id(id)
+    if not inc:
+        raise HTTPException(status_code=404, detail=f"Incident {id} not found")
+
+    existing = db.fetch_recovery_guidance_by_incident(id)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"No recovery guidance found for incident {id}")
+
+    current_status = existing.get("review_status")
+    if current_status not in ("ACCEPTED", "EDITED"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot mark remediation applied: guidance must be in ACCEPTED or EDITED status first (current status: {current_status})."
+        )
+
+    db.mark_remediation_applied(
+        guidance_id=existing["guidance_id"],
+        reviewer=payload.reviewer,
+        notes=payload.notes,
+    )
+
+    updated = db.fetch_recovery_guidance_by_id(existing["guidance_id"])
+    return _format_guidance_record(updated)
+
+
+@app.post(
+    "/correlations/{id}/recovery-guidance/verify",
+    response_model=VerificationResultResponse,
+    tags=["Model 3 Secure & Recover Guidance"],
+    summary="Verify breach rectification using post-remediation telemetry",
+    description="""
+Tests whether the incident's triggering correlation rule re-fires on telemetry received
+after remediation was applied. If rule re-fires, updates incident to VERIFICATION_FAILED.
+If rule does not re-fire, updates incident to RECTIFIED and logs the resolved pattern.
+Guards:
+- Rejects with HTTP 400 if /mark-applied has not yet been executed by the CISO.
+- Rejects with HTTP 409 if called before verification_min_window_seconds has elapsed.
+    """
+)
+async def verify_incident_rectification(
+    id: str,
+    reviewer: str = "ciso_verification",
+    notes: Optional[str] = None
+):
+    try:
+        result = model3_recovery.verify_rectification(
+            incident_id=id,
+            reviewer=reviewer,
+            notes=notes
+        )
+        return VerificationResultResponse(**result)
+    except model3_recovery.RemediationNotAppliedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except model3_recovery.VerificationWindowTooEarlyError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": exc.message,
+                "retry_after_seconds": exc.retry_after_seconds
+            }
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("Verification failed for incident %s: %s", id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Verification error: {exc}")
+
+
+@app.get(
+    "/brain/model3/status",
+    response_model=Model3StatusResponse,
+    tags=["Model 3 Secure & Recover Guidance"],
+    summary="Get Model 3 operational and reachability status",
+    description="""
+Returns live status of the Model 3 guidance engine:
+- LLM reachability probe against local Ollama daemon
+- Last model used (DeepSeek-R1, Qwen2.5, or deterministic fallback)
+- Counts of guidance across lifecycle stages (pending, edited, accepted, awaiting verification, rectified, failed)
+- Timestamp of last run and active incident count
+    """
+)
+async def get_model3_status():
+    reachable = model3_recovery.check_llm_reachability(timeout=1.5)
+    counts_dict = db.count_recovery_guidance_by_status()
+    last_model, last_run = db.fetch_latest_guidance_metadata()
+    open_incidents = db.fetch_open_incidents()
+
+    return Model3StatusResponse(
+        llm_reachable=reachable,
+        last_model_used=last_model or "none",
+        counts=Model3StatusCounts(**counts_dict),
+        last_run_at=last_run,
+        active_incident_count=len(open_incidents),
+    )
+
+
+@app.get(
+    "/correlations/{id}/model3-status",
+    response_model=IncidentModel3StatusResponse,
+    tags=["Model 3 Secure & Recover Guidance"],
+    summary="Get incident Model 3 lifecycle stage and transition stepper",
+    description="""
+Returns the current lifecycle stage for Mission Control dashboard visualization:
+Stages: DETECTED -> CORRELATED -> GUIDANCE_GENERATED -> CISO_REVIEWED -> VERIFYING -> RECTIFIED | VERIFICATION_FAILED
+Includes timestamps for each stage transition.
+    """
+)
+async def get_incident_model3_status(id: str):
+    inc = db.fetch_incident_by_id(id)
+    if not inc:
+        raise HTTPException(status_code=404, detail=f"Incident {id} not found")
+
+    guidance = db.fetch_recovery_guidance_by_incident(id)
+    inc_status = inc.get("status", "OPEN").upper()
+
+    # Determine stage
+    if inc_status == "RECTIFIED":
+        stage = "RECTIFIED"
+    elif inc_status == "VERIFICATION_FAILED":
+        stage = "VERIFICATION_FAILED"
+    elif guidance and (guidance.get("review_status") == "REMEDIATION_APPLIED" or guidance.get("remediation_applied_at")):
+        stage = "REMEDIATION_APPLIED"
+    elif guidance and guidance.get("review_status") in ("ACCEPTED", "EDITED"):
+        stage = "CISO_REVIEWED"
+    elif guidance:
+        stage = "GUIDANCE_GENERATED"
+    else:
+        stage = "CORRELATED"
+
+    timestamps = {
+        "detected_at": inc.get("timestamp"),
+        "correlated_at": inc.get("created_at"),
+        "guidance_generated_at": guidance.get("generated_at") if guidance else None,
+        "reviewed_at": (guidance.get("reviewed_at") or guidance.get("edited_at")) if guidance else None,
+        "remediation_applied_at": guidance.get("remediation_applied_at") if guidance else None,
+        "verified_at": guidance.get("verified_at") if guidance else None,
+    }
+
+    return IncidentModel3StatusResponse(
+        incident_id=id,
+        guidance_id=guidance.get("guidance_id") if guidance else None,
+        current_stage=stage,
+        model_used=guidance.get("model_used") if guidance else None,
+        llm_used=guidance.get("llm_used") if guidance else None,
+        review_status=guidance.get("review_status") if guidance else None,
+        verification_result=guidance.get("verification_result") if guidance else None,
+        timestamps=timestamps,
+    )
 
 
 # ─────────────────────────────────────────────────────────────

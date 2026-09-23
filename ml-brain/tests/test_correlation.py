@@ -11,6 +11,7 @@ Tests are standalone — no external services required.
 
 import json
 import sys
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -539,6 +540,40 @@ class TestAPIEndpoints:
         assert len(last_resp["correlations_triggered"]) >= 1 or \
                test_client.get("/correlations/active").json() != []
 
+    def test_ingest_event_fast_response_when_audit_offline(self, test_client):
+        """
+        Confirms that event ingestion returns in well under 1s even when
+        the downstream audit service (port 8006) is offline, proving the
+        audit forwarding task does not block the real-time ingestion path.
+        """
+        base = datetime.now(timezone.utc)
+        ev1 = {
+            "event_id": "EVT-PERF-001", "timestamp": base.isoformat(),
+            "source": "ACCESS", "satellite_id": "SAT-PERF-01",
+            "event_type": "SUSPICIOUS_LOGIN", "severity": "MEDIUM",
+            "confidence": 0.88, "description": "Perf test login",
+            "action": "REVIEW", "evidence": {}, "related_events": [],
+            "operator_id": "OP-PERF", "session_id": "S-PERF-001",
+        }
+        test_client.post("/events/ingest", json=ev1)
+
+        ev2 = {
+            "event_id": "EVT-PERF-002",
+            "timestamp": (base + timedelta(seconds=10)).isoformat(),
+            "source": "UPLINK", "satellite_id": "SAT-PERF-01",
+            "event_type": "UNAUTHORIZED_COMMAND", "severity": "HIGH",
+            "confidence": 0.94, "description": "Perf test command triggering incident",
+            "action": "REVIEW", "evidence": {}, "related_events": [],
+            "operator_id": "OP-PERF", "session_id": "S-PERF-001",
+        }
+        t0 = time.time()
+        resp = test_client.post("/events/ingest", json=ev2)
+        elapsed = time.time() - t0
+
+        assert resp.status_code == 201
+        assert len(resp.json()["correlations_triggered"]) >= 1
+        assert elapsed < 1.0, f"Ingestion blocked on audit forward! Took {elapsed:.2f}s"
+
     def test_active_correlations_empty_initially(self, test_client):
         resp = test_client.get("/correlations/active")
         assert resp.status_code == 200
@@ -838,4 +873,64 @@ class TestFeatureParity:
         assert "satellite_match_count" in parsed, (
             "Stored features must contain satellite_match_count for ML training."
         )
+
+
+# ─────────────────────────────────────────────────────────────
+# 11. TEST SUITE: Cross-Module Verification Gaps & Edge Cases
+# ─────────────────────────────────────────────────────────────
+
+class TestCrossModuleCoverageGaps:
+    """Verifies cross-module edge cases identified in verification audit."""
+
+    def test_duplicate_event_ingestion_idempotent(self, test_client):
+        """Asserts that ingesting an event with a duplicate event_id is handled gracefully without crashing."""
+        from db import database
+        now_iso = datetime.now(timezone.utc).isoformat()
+        payload = {
+            "event_id": "EVT-DUP-001",
+            "timestamp": now_iso,
+            "source": "ACCESS",
+            "satellite_id": "SAT-TEST-DUP",
+            "event_type": "SUSPICIOUS_LOGIN",
+            "severity": "LOW",
+            "confidence": 0.8,
+            "description": "Idempotency test event",
+            "action": "REVIEW",
+            "evidence": {},
+            "related_events": [],
+        }
+
+        # First ingestion
+        r1 = test_client.post("/events/ingest", json=payload)
+        assert r1.status_code == 201
+        assert r1.json()["status"] == "ACCEPTED"
+
+        # Second ingestion with identical event_id
+        r2 = test_client.post("/events/ingest", json=payload)
+        assert r2.status_code == 201
+        assert r2.json()["status"] == "ACCEPTED"
+
+        # Verify DB integrity: single row in events table
+        with database.get_connection() as conn:
+            rows = conn.execute("SELECT * FROM events WHERE event_id = ?", ("EVT-DUP-001",)).fetchall()
+            assert len(rows) == 1
+
+    def test_event_timestamp_far_past_and_future(self, test_client):
+        """Verifies ingestion parses and normalizes events with extreme timestamps without crashing."""
+        for i, extreme_ts in enumerate(["1999-01-01T00:00:00Z", "2040-12-31T23:59:59Z"]):
+            payload = {
+                "event_id": f"EVT-EXTREME-TS-{i+1}",
+                "timestamp": extreme_ts,
+                "source": "DOWNLINK",
+                "satellite_id": "SAT-TEST-TS",
+                "event_type": "TELEMETRY_ANOMALY",
+                "severity": "LOW",
+                "confidence": 0.5,
+                "description": f"Extreme timestamp test ({extreme_ts})",
+                "action": "MONITOR",
+            }
+            resp = test_client.post("/events/ingest", json=payload)
+            assert resp.status_code == 201
+            assert resp.json()["status"] == "ACCEPTED"
+
 

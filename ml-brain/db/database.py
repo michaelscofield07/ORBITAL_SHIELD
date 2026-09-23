@@ -15,6 +15,7 @@ import logging
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("orbital.db")
 
@@ -136,6 +137,32 @@ def init_db() -> None:
             triggered_by TEXT,               -- 'retrain_job' / 'manual' / 'ciso_feedback'
             notes        TEXT
         );
+
+        -- ─── Model 3 Secure & Recover Guidance ───────────────────────────────
+        CREATE TABLE IF NOT EXISTS recovery_guidance (
+            guidance_id   TEXT PRIMARY KEY,
+            incident_id   TEXT NOT NULL,
+            generated_at  TEXT NOT NULL,
+            model_used    TEXT NOT NULL,
+            llm_used      INTEGER NOT NULL,
+            guidance_json TEXT NOT NULL,
+            review_status TEXT NOT NULL DEFAULT 'PENDING_REVIEW',
+            reviewed_by   TEXT,
+            review_notes  TEXT,
+            reviewed_at   TEXT,
+            ciso_edited_json TEXT,
+            edited_by     TEXT,
+            edited_at     TEXT,
+            verification_result TEXT,
+            verified_at   TEXT,
+            verification_evidence_json TEXT,
+            remediation_applied_at TEXT,
+            remediation_applied_by TEXT,
+            remediation_notes TEXT,
+            FOREIGN KEY(incident_id) REFERENCES incidents(event_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_recovery_incident ON recovery_guidance(incident_id);
+        CREATE INDEX IF NOT EXISTS idx_recovery_status   ON recovery_guidance(review_status);
         """)
 
         # ─── Safe, Non-Destructive Migrations for Features & Model 1 ───
@@ -154,6 +181,7 @@ def init_db() -> None:
         _add_column_if_missing(conn, "events", "packet_info", "TEXT DEFAULT '{}'")
         _add_column_if_missing(conn, "events", "raw_log", "TEXT DEFAULT '{}'")
         _add_column_if_missing(conn, "events", "ciso_notes", "TEXT")
+        _add_column_if_missing(conn, "events", "cert_in_info", "TEXT DEFAULT '{}'")
 
         _add_column_if_missing(conn, "incidents", "authorization_status", "TEXT DEFAULT 'UNAUTHORIZED'")
         _add_column_if_missing(conn, "incidents", "authorization_reason", "TEXT")
@@ -163,9 +191,21 @@ def init_db() -> None:
         _add_column_if_missing(conn, "incidents", "historical_pattern_details", "TEXT DEFAULT '{}'")
         _add_column_if_missing(conn, "incidents", "incident_document_md", "TEXT")
         _add_column_if_missing(conn, "incidents", "cert_in_report", "TEXT DEFAULT '{}'")
+        _add_column_if_missing(conn, "incidents", "cert_in_context", "TEXT DEFAULT '{}'")
 
         _add_column_if_missing(conn, "feedback_log", "is_rectified", "INTEGER DEFAULT 0")
         _add_column_if_missing(conn, "feedback_log", "verified_pattern_json", "TEXT")
+
+        # ─── Model 3: CISO Edit & Verification Migrations ───
+        _add_column_if_missing(conn, "recovery_guidance", "ciso_edited_json", "TEXT")
+        _add_column_if_missing(conn, "recovery_guidance", "edited_by", "TEXT")
+        _add_column_if_missing(conn, "recovery_guidance", "edited_at", "TEXT")
+        _add_column_if_missing(conn, "recovery_guidance", "verification_result", "TEXT")
+        _add_column_if_missing(conn, "recovery_guidance", "verified_at", "TEXT")
+        _add_column_if_missing(conn, "recovery_guidance", "verification_evidence_json", "TEXT")
+        _add_column_if_missing(conn, "recovery_guidance", "remediation_applied_at", "TEXT")
+        _add_column_if_missing(conn, "recovery_guidance", "remediation_applied_by", "TEXT")
+        _add_column_if_missing(conn, "recovery_guidance", "remediation_notes", "TEXT")
 
     logger.info("Database initialised at %s", get_db_path())
 
@@ -191,8 +231,8 @@ def insert_event(event: dict) -> None:
              related_events, operator_id, session_id, ingested_at,
              actor, device_id, source_ip, destination_ip, resource,
              authorization_status, authorization_reason, data_access,
-             firmware_info, packet_info, raw_log, ciso_notes)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             firmware_info, packet_info, raw_log, ciso_notes, cert_in_info)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             event["event_id"],
             event["timestamp"],
@@ -220,6 +260,7 @@ def insert_event(event: dict) -> None:
             json.dumps(event.get("packet_info", {}), default=str),
             json.dumps(event.get("raw_log", {}), default=str),
             event.get("ciso_notes"),
+            json.dumps(event.get("cert_in_info", {}), default=str),
         ))
 
 
@@ -265,8 +306,8 @@ def insert_incident(incident: dict) -> None:
              rule_score, ml_adjustment, satellite_id, operator_id, session_id,
              status, features_json, created_at, authorization_status, authorization_reason,
              unauthorized_chain, data_access_summary, historical_pattern_matched,
-             historical_pattern_details, incident_document_md, cert_in_report)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             historical_pattern_details, incident_document_md, cert_in_report, cert_in_context)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             incident["event_id"],
             incident["timestamp"],
@@ -278,11 +319,12 @@ def insert_incident(incident: dict) -> None:
             json.dumps(incident["related_events"], default=str),
             incident.get("action", "HUMAN_REVIEW"),
             incident["risk_score"],
-            incident["rule_id"],
-            incident["rule_name"],
-            incident["rule_score"],
+            incident.get("rule_id", "RULE_UNKNOWN"),
+            incident.get("rule_name", "Unknown Rule"),
+            incident.get("rule_score", 0),
             incident.get("ml_adjustment", 0),
-            incident["satellite_id"],
+            incident.get("satellite_id", "SAT-ORBITAL-01"),
+
             incident.get("operator_id"),
             incident.get("session_id"),
             incident.get("status", "OPEN"),
@@ -296,6 +338,7 @@ def insert_incident(incident: dict) -> None:
             json.dumps(incident.get("historical_pattern_details", {}), default=str),
             incident.get("incident_document_md"),
             json.dumps(incident.get("cert_in_report", {}), default=str),
+            json.dumps(incident.get("cert_in_context", {}), default=str),
         ))
 
 
@@ -445,6 +488,8 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
         d["packet_info"] = json.loads(d.get("packet_info") or "{}")
     if "raw_log" in d:
         d["raw_log"] = json.loads(d.get("raw_log") or "{}")
+    if "cert_in_info" in d:
+        d["cert_in_info"] = json.loads(d.get("cert_in_info") or "{}")
     return d
 
 
@@ -459,6 +504,8 @@ def _incident_row_to_dict(row: sqlite3.Row) -> dict:
         d["historical_pattern_details"] = json.loads(d.get("historical_pattern_details") or "{}")
     if "cert_in_report" in d:
         d["cert_in_report"] = json.loads(d.get("cert_in_report") or "{}")
+    if "cert_in_context" in d:
+        d["cert_in_context"] = json.loads(d.get("cert_in_context") or "{}")
     return d
 
 
@@ -530,6 +577,27 @@ def fetch_historical_data_access(matched_incident_ids: list[str]) -> list[dict]:
         return data_accesses
 
 
+def fetch_cert_in_advisories(satellite_id: str | None = None, incident_id: str | None = None, limit: int = 10) -> list[dict]:
+    """
+    Fetches CERT-In advisory events matching a satellite or referenced incident.
+    """
+    with get_connection() as conn:
+        query = "SELECT * FROM events WHERE (source = 'CERT_IN' OR event_type IN ('CERT_IN_ADVISORY', 'CERT_IN_SUMMARY'))"
+        params = []
+        if incident_id:
+            query += " AND (related_events LIKE ? OR description LIKE ? OR cert_in_info LIKE ? OR evidence LIKE ?)"
+            match_term = f"%{incident_id}%"
+            params.extend([match_term, match_term, match_term, match_term])
+        elif satellite_id:
+            query += " AND (satellite_id = ? OR satellite_id = 'SAT-ORBITAL-01' OR satellite_id = 'ALL')"
+            params.append(satellite_id)
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+
+        rows = conn.execute(query, tuple(params)).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
 def fetch_verified_rectified_signatures() -> list[dict]:
     """
     Fetches all verdicts where CISO verified the activity as legitimate,
@@ -569,4 +637,271 @@ def is_event_or_pattern_rectified(event_dict: dict) -> tuple[bool, str | None]:
                 return True, f"Activity under {rule_id} was previously rectified by {r['reviewer']}: {r['notes']}"
 
     return False, None
+
+
+# ─────────────────────────────────────────────────────────────
+# Model 3: Recovery Guidance CRUD Helpers
+# ─────────────────────────────────────────────────────────────
+
+def insert_recovery_guidance(guidance: dict) -> None:
+    """Inserts a new Model 3 Secure & Recover Guidance record."""
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO recovery_guidance (
+                guidance_id, incident_id, generated_at, model_used,
+                llm_used, guidance_json, review_status, reviewed_by,
+                review_notes, reviewed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                guidance["guidance_id"],
+                guidance["incident_id"],
+                guidance["generated_at"],
+                guidance["model_used"],
+                1 if guidance.get("llm_used") else 0,
+                guidance["guidance_json"] if isinstance(guidance["guidance_json"], str) else json.dumps(guidance["guidance_json"]),
+                guidance.get("review_status", "PENDING_REVIEW"),
+                guidance.get("reviewed_by"),
+                guidance.get("review_notes"),
+                guidance.get("reviewed_at"),
+            )
+        )
+
+
+def _parse_guidance_row(row_dict: dict) -> dict:
+    """Helper to parse JSON fields and types in recovery_guidance rows."""
+    row_dict["llm_used"] = bool(row_dict.get("llm_used"))
+    ciso_raw = row_dict.get("ciso_edited_json")
+    if ciso_raw:
+        if isinstance(ciso_raw, str):
+            try:
+                row_dict["ciso_edited"] = json.loads(ciso_raw)
+            except Exception:
+                row_dict["ciso_edited"] = None
+        else:
+            row_dict["ciso_edited"] = ciso_raw
+    else:
+        row_dict["ciso_edited"] = None
+
+    ev_raw = row_dict.get("verification_evidence_json")
+    if ev_raw:
+        if isinstance(ev_raw, str):
+            try:
+                row_dict["verification_evidence"] = json.loads(ev_raw)
+            except Exception:
+                row_dict["verification_evidence"] = None
+        else:
+            row_dict["verification_evidence"] = ev_raw
+    else:
+        row_dict["verification_evidence"] = None
+
+    return row_dict
+
+
+def fetch_recovery_guidance_by_incident(incident_id: str) -> Optional[dict]:
+    """Fetches the latest recovery guidance record for a specific incident."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM recovery_guidance WHERE incident_id = ? ORDER BY generated_at DESC LIMIT 1",
+            (incident_id,)
+        ).fetchone()
+        if not row:
+            return None
+        res = _row_to_dict(row)
+        return _parse_guidance_row(res)
+
+
+def fetch_recovery_guidance_by_id(guidance_id: str) -> Optional[dict]:
+    """Fetches a specific recovery guidance record by its guidance_id."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM recovery_guidance WHERE guidance_id = ?",
+            (guidance_id,)
+        ).fetchone()
+        if not row:
+            return None
+        res = _row_to_dict(row)
+        return _parse_guidance_row(res)
+
+
+def update_recovery_guidance_review(
+    guidance_id: str,
+    review_status: str,
+    reviewed_by: str,
+    review_notes: Optional[str] = None
+) -> bool:
+    """Updates the CISO review status (ACCEPTED / DISMISSED) of a guidance record."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE recovery_guidance
+            SET review_status = ?, reviewed_by = ?, review_notes = ?, reviewed_at = ?
+            WHERE guidance_id = ?
+            """,
+            (review_status, reviewed_by, review_notes, now_iso, guidance_id)
+        )
+        return cursor.rowcount > 0
+
+
+def update_recovery_guidance_edit(
+    guidance_id: str,
+    edited_guidance: dict,
+    reviewer: str,
+    notes: Optional[str] = None
+) -> bool:
+    """Updates recovery guidance with CISO-edited content while preserving original LLM plan."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    edited_json = json.dumps(edited_guidance) if not isinstance(edited_guidance, str) else edited_guidance
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE recovery_guidance
+            SET review_status = 'EDITED',
+                ciso_edited_json = ?,
+                edited_by = ?,
+                edited_at = ?,
+                reviewed_by = ?,
+                review_notes = ?,
+                reviewed_at = ?
+            WHERE guidance_id = ?
+            """,
+            (edited_json, reviewer, now_iso, reviewer, notes, now_iso, guidance_id)
+        )
+        return cursor.rowcount > 0
+
+
+def mark_remediation_applied(
+    guidance_id: str,
+    reviewer: str,
+    applied_at: Optional[str] = None,
+    notes: Optional[str] = None
+) -> bool:
+    """
+    Updates recovery guidance to REMEDIATION_APPLIED with timestamp and CISO attribution.
+    This explicitly records that the human operator has executed remediation in the real world.
+    """
+    now_iso = applied_at or datetime.now(timezone.utc).isoformat()
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE recovery_guidance
+            SET review_status = 'REMEDIATION_APPLIED',
+                remediation_applied_at = ?,
+                remediation_applied_by = ?,
+                remediation_notes = ?
+            WHERE guidance_id = ?
+            """,
+            (now_iso, reviewer, notes, guidance_id)
+        )
+        return cursor.rowcount > 0
+
+
+def update_recovery_guidance_verification(
+    guidance_id: str,
+    verification_result: str,
+    evidence: dict
+) -> bool:
+    """Updates recovery guidance verification outcome (PASSED / FAILED) and evidence."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    evidence_json = json.dumps(evidence) if not isinstance(evidence, str) else evidence
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE recovery_guidance
+            SET verification_result = ?,
+                verified_at = ?,
+                verification_evidence_json = ?
+            WHERE guidance_id = ?
+            """,
+            (verification_result, now_iso, evidence_json, guidance_id)
+        )
+        return cursor.rowcount > 0
+
+
+def count_recovery_guidance_by_status() -> dict:
+    """Returns counts of recovery guidance records grouped by status/stages."""
+    counts = {
+        "pending_review": 0,
+        "edited": 0,
+        "accepted": 0,
+        "remediation_applied": 0,
+        "dismissed": 0,
+        "awaiting_verification": 0,
+        "rectified": 0,
+        "verification_failed": 0,
+    }
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT review_status, COUNT(*) as cnt FROM recovery_guidance GROUP BY review_status"
+        ).fetchall()
+        for r in rows:
+            status = (r["review_status"] or "").lower()
+            if status == "pending_review":
+                counts["pending_review"] = r["cnt"]
+            elif status == "edited":
+                counts["edited"] = r["cnt"]
+            elif status == "accepted":
+                counts["accepted"] = r["cnt"]
+            elif status == "remediation_applied":
+                counts["remediation_applied"] = r["cnt"]
+            elif status == "dismissed":
+                counts["dismissed"] = r["cnt"]
+
+        inc_rows = conn.execute(
+            "SELECT status, COUNT(*) as cnt FROM incidents GROUP BY status"
+        ).fetchall()
+        for r in inc_rows:
+            istatus = (r["status"] or "").upper()
+            if istatus == "RECTIFIED":
+                counts["rectified"] = r["cnt"]
+            elif istatus == "VERIFICATION_FAILED":
+                counts["verification_failed"] = r["cnt"]
+
+        awaiting_row = conn.execute(
+            """
+            SELECT COUNT(DISTINCT g.guidance_id) as cnt
+            FROM recovery_guidance g
+            JOIN incidents i ON g.incident_id = i.event_id
+            WHERE g.review_status IN ('ACCEPTED', 'EDITED', 'REMEDIATION_APPLIED')
+              AND i.status NOT IN ('RECTIFIED', 'VERIFICATION_FAILED', 'CLOSED')
+            """
+        ).fetchone()
+        if awaiting_row:
+            counts["awaiting_verification"] = awaiting_row["cnt"]
+
+    return counts
+
+
+def fetch_latest_guidance_metadata() -> Tuple[Optional[str], Optional[str]]:
+    """Returns (last_model_used, last_run_at) from recovery_guidance table."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT model_used, generated_at FROM recovery_guidance ORDER BY generated_at DESC LIMIT 1"
+        ).fetchone()
+        if row:
+            return row["model_used"], row["generated_at"]
+    return None, None
+
+
+def fetch_all_recovery_guidance(review_status: Optional[str] = None, limit: int = 50) -> list[dict]:
+    """Fetches recovery guidance records with optional filtering by review_status."""
+    with get_connection() as conn:
+        if review_status:
+            rows = conn.execute(
+                "SELECT * FROM recovery_guidance WHERE review_status = ? ORDER BY generated_at DESC LIMIT ?",
+                (review_status, limit)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM recovery_guidance ORDER BY generated_at DESC LIMIT ?",
+                (limit,)
+            ).fetchall()
+
+        results = []
+        for r in rows:
+            item = _row_to_dict(r)
+            results.append(_parse_guidance_row(item))
+        return results
 

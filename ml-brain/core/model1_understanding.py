@@ -27,6 +27,97 @@ logger = logging.getLogger("orbital.model1")
 _SEVERITY_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
 
 
+def _compile_cert_in_context(cert_in_events: list[dict]) -> dict:
+    """
+    Compiles CERT-In threat intelligence, advisories, referenced threat vectors,
+    and remediation directives into an aggregated context dictionary.
+    """
+    if not cert_in_events:
+        return {
+            "has_advisory": False,
+            "advisory_count": 0,
+            "references": [],
+            "primary_reference": None,
+            "threat_vectors": [],
+            "recommended_actions": [],
+            "mandate_actions": [],
+            "advisories": [],
+        }
+
+    references = []
+    threat_vectors = []
+    recommended_actions = []
+    mandate_actions = []
+    advisories = []
+
+    for ev in cert_in_events:
+        cinfo = ev.get("cert_in_info") or {}
+        evidence = ev.get("evidence") or {}
+
+        ref = (
+            cinfo.get("cert_in_reference")
+            or ev.get("cert_in_reference")
+            or evidence.get("cert_in_reference")
+        )
+        if ref and ref not in references:
+            references.append(ref)
+
+        title = cinfo.get("title") or ev.get("title") or ev.get("description")
+
+        tvs = (
+            cinfo.get("threat_vectors")
+            or ev.get("threat_vectors")
+            or evidence.get("threat_vectors")
+            or []
+        )
+        for tv in tvs:
+            if tv and tv not in threat_vectors:
+                threat_vectors.append(tv)
+
+        recs = (
+            cinfo.get("recommended_actions")
+            or ev.get("recommended_actions")
+            or evidence.get("recommended_actions")
+            or []
+        )
+        for rec in recs:
+            if rec and rec not in recommended_actions:
+                recommended_actions.append(rec)
+
+        mands = (
+            cinfo.get("mandate_actions")
+            or ev.get("mandate_actions")
+            or evidence.get("mandate_actions")
+            or []
+        )
+        for mand in mands:
+            if mand and mand not in mandate_actions:
+                mandate_actions.append(mand)
+
+        advisories.append({
+            "event_id": ev.get("event_id"),
+            "reference": ref,
+            "title": title,
+            "severity": ev.get("severity"),
+            "timestamp": ev.get("timestamp"),
+            "threat_vectors": tvs,
+            "recommended_actions": recs,
+            "mandate_actions": mands,
+            "details": cinfo.get("details") or ev.get("description"),
+        })
+
+    return {
+        "has_advisory": len(references) > 0 or len(cert_in_events) > 0,
+        "advisory_count": len(cert_in_events),
+        "references": references,
+        "primary_reference": references[0] if references else None,
+        "threat_vectors": threat_vectors,
+        "recommended_actions": recommended_actions,
+        "mandate_actions": mandate_actions,
+        "advisories": advisories,
+    }
+
+
 def understand_incident(incident: dict, contributing_events: list[dict]) -> dict:
     """
     Main Model 1 reasoning entry point.
@@ -47,27 +138,51 @@ def understand_incident(incident: dict, contributing_events: list[dict]) -> dict
           - historical_pattern_details
           - incident_document_md
           - cert_in_report
+          - cert_in_context
     """
+    # Collect CERT-In events: from contributing events + historical database lookup
+    cert_in_events = [
+        e for e in contributing_events
+        if e.get("source") == "CERT_IN" or e.get("event_type") in {"CERT_IN_ADVISORY", "CERT_IN_SUMMARY"}
+    ]
+
+    # Also search DB for any external CERT-In advisories linked to this satellite or incident
+    db_advisories = db.fetch_cert_in_advisories(
+        satellite_id=incident.get("satellite_id"),
+        incident_id=incident.get("event_id"),
+        limit=5
+    )
+    existing_ids = {e.get("event_id") for e in contributing_events}
+    all_events = list(contributing_events)
+    for adv in db_advisories:
+        if adv.get("event_id") not in existing_ids:
+            all_events.append(adv)
+            cert_in_events.append(adv)
+            existing_ids.add(adv.get("event_id"))
+
     # Sort events chronologically
     sorted_events = sorted(
-        contributing_events,
+        all_events,
         key=lambda e: _parse_iso(e.get("timestamp", ""))
     )
 
-    # 1. Evaluate Authorization Context & Reason
+    # 1. Compile structured CERT-In context
+    cert_in_context = _compile_cert_in_context(cert_in_events)
+
+    # 2. Evaluate Authorization Context & Reason
     auth_status, auth_reason = _analyze_authorization_context(incident, sorted_events)
 
-    # 2. Filter & Reconstruct Full Unauthorized Event Chain
+    # 3. Filter & Reconstruct Full Unauthorized Event Chain
     unauth_chain, data_access_summary = _build_unauthorized_chain(sorted_events)
 
-    # 3. Check for Historical Repeated Pattern & Retrieve Associated Data Access (Section 13)
+    # 4. Check for Historical Repeated Pattern & Retrieve Associated Data Access (Section 13)
     hist_matched, hist_details = _correlate_historical_pattern_and_data_access(
         incident=incident,
         current_events=sorted_events,
         current_data_access=data_access_summary
     )
 
-    # 4. Generate Human-Readable Incident Document (CISO + CERT-In)
+    # 5. Generate Human-Readable Incident Document (CISO + CERT-In)
     document_md = _generate_incident_document(
         incident=incident,
         events=sorted_events,
@@ -75,17 +190,19 @@ def understand_incident(incident: dict, contributing_events: list[dict]) -> dict
         auth_reason=auth_reason,
         unauthorized_chain=unauth_chain,
         data_access_summary=data_access_summary,
-        hist_details=hist_details
+        hist_details=hist_details,
+        cert_in_context=cert_in_context
     )
 
-    # 5. Build CERT-In 6-Hour Audit & Reporting Payload
+    # 6. Build CERT-In 6-Hour Audit & Reporting Payload
     cert_in_report = _build_cert_in_report(
         incident=incident,
         events=sorted_events,
         auth_status=auth_status,
         unauthorized_chain=unauth_chain,
         data_access_summary=data_access_summary,
-        hist_details=hist_details
+        hist_details=hist_details,
+        cert_in_context=cert_in_context
     )
 
     # Update incident fields
@@ -97,10 +214,11 @@ def understand_incident(incident: dict, contributing_events: list[dict]) -> dict
     incident["historical_pattern_details"] = hist_details
     incident["incident_document_md"] = document_md
     incident["cert_in_report"] = cert_in_report
+    incident["cert_in_context"] = cert_in_context
 
     logger.info(
-        "Model 1 Understanding complete for %s | auth=%s | chain_len=%d | hist_match=%s",
-        incident["event_id"], auth_status, len(unauth_chain), hist_matched
+        "Model 1 Understanding complete for %s | auth=%s | chain_len=%d | hist_match=%s | cert_in_advs=%d",
+        incident["event_id"], auth_status, len(unauth_chain), hist_matched, len(cert_in_events)
     )
     return incident
 
@@ -166,11 +284,22 @@ def _analyze_authorization_context(incident: dict, events: list[dict]) -> Tuple[
             else:
                 unauthorized_reasons.append(ev_reason or f"Unauthorized action detected ({etype}).")
 
-        elif ev_auth == "SUSPICIOUS" or etype in {
+        elif ev_auth in ("SUSPICIOUS", "UNKNOWN") or etype in {
             "SUSPICIOUS_LOGIN", "FAILED_LOGIN", "REPLAY_ATTACK",
             "TELEMETRY_ANOMALY", "SIGNAL_INTERFERENCE"
         }:
-            suspicious_reasons.append(ev_reason or f"Anomalous telemetry or event signature ({etype}).")
+            suspicious_reasons.append(ev_reason or f"Anomalous telemetry or unverified event signature ({etype}).")
+
+
+        elif etype in {"CERT_IN_ADVISORY", "CERT_IN_SUMMARY"} or ev.get("source") == "CERT_IN":
+            if ev_auth == "UNAUTHORIZED":
+                unauthorized_reasons.append(
+                    f"CERT-In threat advisory confirmed unauthorized threat vector ({ev_reason or ev.get('description', '')})."
+                )
+            elif ev_auth == "SUSPICIOUS":
+                suspicious_reasons.append(
+                    f"CERT-In advisory flagged suspicious activity ({ev_reason or ev.get('description', '')})."
+                )
 
     if unauthorized_reasons:
         return (
@@ -215,7 +344,9 @@ def _build_unauthorized_chain(events: list[dict]) -> Tuple[List[dict], dict]:
 
     for idx, ev in enumerate(events):
         etype = ev.get("event_type", "").upper()
+        source = (ev.get("source") or "").upper()
         auth_status = ev.get("authorization_status", "SUSPICIOUS")
+        is_cert_in = source == "CERT_IN" or etype in {"CERT_IN_ADVISORY", "CERT_IN_SUMMARY"}
         is_unauthorized = auth_status == "UNAUTHORIZED" or etype in {
             "UNAUTHORIZED_COMMAND", "ACCESS_VIOLATION", "FIRMWARE_TAMPERING",
             "COMMAND_INJECTION", "PRIVILEGE_ESCALATION", "UNAUTHORIZED_DATA_ACCESS",
@@ -227,7 +358,9 @@ def _build_unauthorized_chain(events: list[dict]) -> Tuple[List[dict], dict]:
         }
 
         # Role of event in the chain
-        if is_unauthorized:
+        if is_cert_in:
+            chain_role = "EXTERNAL_THREAT_INTELLIGENCE"
+        elif is_unauthorized:
             chain_role = "PRIMARY_UNAUTHORIZED_ACTIVITY"
         elif is_suspicious:
             chain_role = "SUSPICIOUS_INDICATOR"
@@ -276,6 +409,7 @@ def _build_unauthorized_chain(events: list[dict]) -> Tuple[List[dict], dict]:
             "authorization_status": auth_status,
             "authorization_reason": ev.get("authorization_reason"),
             "chain_role": chain_role,
+            "cert_in_info": ev.get("cert_in_info"),
             "data_access": da if da else None,
             "description": ev.get("description"),
         }
@@ -420,7 +554,8 @@ def _generate_incident_document(
     auth_reason: str,
     unauthorized_chain: list[dict],
     data_access_summary: dict,
-    hist_details: dict
+    hist_details: dict,
+    cert_in_context: Optional[dict] = None
 ) -> str:
     """
     Renders a complete, professional, human-readable Incident Document
@@ -436,7 +571,8 @@ def _generate_incident_document(
 
     # Primary unauthorized events vs contextual events
     primary_unauth = [step for step in unauthorized_chain if step["chain_role"] == "PRIMARY_UNAUTHORIZED_ACTIVITY"]
-    context_events = [step for step in unauthorized_chain if step["chain_role"] != "PRIMARY_UNAUTHORIZED_ACTIVITY"]
+    threat_intel = [step for step in unauthorized_chain if step["chain_role"] == "EXTERNAL_THREAT_INTELLIGENCE"]
+    context_events = [step for step in unauthorized_chain if step["chain_role"] not in ("PRIMARY_UNAUTHORIZED_ACTIVITY", "EXTERNAL_THREAT_INTELLIGENCE")]
 
     # Build markdown
     lines = []
@@ -450,19 +586,38 @@ def _generate_incident_document(
     lines.append(f"> **Authorization Status:** **{auth_status}**  ")
     lines.append(f"> **Authorization Finding:** {auth_reason}\n")
     lines.append(f"- **Primary Threat Vector:** {rule_name}")
-    lines.append(f"- **Contributing Security Modules:** {', '.join(set(e.get('source') for e in events))}")
-    actor = events[0].get("actor") or events[0].get("operator_id") or "Unknown"
-    lines.append(f"- **Attributed Actor / Session:** `{actor}` (Session: `{events[0].get('session_id', 'N/A')}`)")
-    lines.append(f"- **Total Contributing Events:** {len(events)} ({len(primary_unauth)} unauthorized actions, {len(context_events)} explanatory context frames)")
+    lines.append(f"- **Contributing Security Modules:** {', '.join(set(e.get('source') for e in events)) if events else 'None (Isolated incident)'}")
+    actor = (events[0].get("actor") or events[0].get("operator_id")) if events else incident.get("operator_id")
+    actor = actor or "Unknown"
+    session_id = events[0].get("session_id", "N/A") if events else incident.get("session_id", "N/A")
+    lines.append(f"- **Attributed Actor / Session:** `{actor}` (Session: `{session_id}`)")
+    intel_part = f", {len(threat_intel)} external threat advisory feed(s)" if threat_intel else ""
+    lines.append(f"- **Total Contributing Events:** {len(events)} ({len(primary_unauth)} unauthorized actions, {len(context_events)} explanatory context frames{intel_part})")
+
+
+    if cert_in_context and cert_in_context.get("has_advisory"):
+        ref_str = ", ".join(cert_in_context.get("references", [])) or "Active Advisory"
+        lines.append(f"> **CERT-In Threat Advisory Intelligence:** Linked Advisory `{ref_str}`")
+        if cert_in_context.get("threat_vectors"):
+            lines.append(f"> **External Threat Vectors Identified:** {', '.join(cert_in_context['threat_vectors'])}")
 
     # Immediate containment recommendations
     lines.append(f"\n### Immediate Containment Recommendations:")
+    rec_num = 1
+    if cert_in_context and cert_in_context.get("recommended_actions"):
+        for rec in cert_in_context["recommended_actions"]:
+            lines.append(f"{rec_num}. **CERT-In Mandated Directive:** {rec}")
+            rec_num += 1
     if "UNAUTHORIZED_COMMAND" in [e.get("event_type") for e in events]:
-        lines.append(f"1. **Isolate Uplink Channel:** Immediately issue emergency uplink disable command to prevent unauthorized spacecraft state changes.")
+        lines.append(f"{rec_num}. **Isolate Uplink Channel:** Immediately issue emergency uplink disable command to prevent unauthorized spacecraft state changes.")
+        rec_num += 1
     if "FIRMWARE" in [e.get("source") for e in events]:
-        lines.append(f"2. **Firmware Rollback:** Revert on-board OBC image to known verified backup digest; invalidate untrusted firmware update job.")
-    lines.append(f"3. **Revoke Credentials & Session:** Terminate active session `{events[0].get('session_id', 'N/A')}` and lock operator `{actor}` pending investigation.")
-    lines.append(f"4. **Preserve Forensic Log:** All raw telemetry and command packets have been committed to immutable SQLite backing store.")
+        lines.append(f"{rec_num}. **Firmware Rollback:** Revert on-board OBC image to known verified backup digest; invalidate untrusted firmware update job.")
+        rec_num += 1
+    lines.append(f"{rec_num}. **Revoke Credentials & Session:** Terminate active session `{session_id}` and lock operator `{actor}` pending investigation.")
+
+    rec_num += 1
+    lines.append(f"{rec_num}. **Preserve Forensic Log:** All raw telemetry and command packets have been committed to immutable SQLite backing store.")
 
     lines.append(f"\n---")
 
@@ -486,7 +641,11 @@ def _generate_incident_document(
     lines.append(f"\n### Attack Chain Narrative:")
     chain_narrative = []
     for step in unauthorized_chain:
-        chain_narrative.append(f"**[{step['event_type']} @ {step['source']}]**: {step['description']}")
+        if step["chain_role"] == "EXTERNAL_THREAT_INTELLIGENCE":
+            c_ref = (step.get("cert_in_info") or {}).get("cert_in_reference") or "Advisory"
+            chain_narrative.append(f"**[CERT-In Intelligence Advisory ({c_ref}) @ {step['source']}]**: {step['description']}")
+        else:
+            chain_narrative.append(f"**[{step['event_type']} @ {step['source']}]**: {step['description']}")
     lines.append(" → \n".join(chain_narrative))
 
     lines.append(f"\n---")
@@ -530,6 +689,18 @@ def _generate_incident_document(
     lines.append(f"- **Reporting Obligation:** Mandatory notification required within **6 hours** of incident confirmation.")
     lines.append(f"- **Regulated Asset Class:** Spacecraft Telemetry, Tracking & Command (TT&C) Subsystems and Ground Control Infrastructure.")
     lines.append(f"- **Incident Categorization:** `{etype}` / Critical Space Infrastructure Security Compromise.")
+
+    if cert_in_context and cert_in_context.get("has_advisory"):
+        refs = ", ".join(cert_in_context.get("references", [])) or "None"
+        lines.append(f"- **Correlated CERT-In Advisory Reference(s):** `{refs}`")
+        if cert_in_context.get("threat_vectors"):
+            lines.append(f"- **Recognized Threat Vector(s):** {', '.join(cert_in_context['threat_vectors'])}")
+        acts = cert_in_context.get("mandate_actions") or cert_in_context.get("recommended_actions")
+        if acts:
+            lines.append(f"- **Mandated Remediation Actions:**")
+            for act in acts:
+                lines.append(f"  * {act}")
+
     lines.append(f"- **Initial Root Cause Assessment:** Failure of dual-control authorization protocols or compromised operator session tokens spanning ground station modules.")
     lines.append(f"- **Impact On Spacecraft Operations:** High risk of unauthorized telemetry spoofing, commands injection, or payload firmware disruption.")
     lines.append(f"- **Audit Verification:** Immutable log hash generated and cryptographically indexed in SQLite WAL audit log.")
@@ -547,7 +718,8 @@ def _build_cert_in_report(
     auth_status: str,
     unauthorized_chain: list[dict],
     data_access_summary: dict,
-    hist_details: dict
+    hist_details: dict,
+    cert_in_context: Optional[dict] = None
 ) -> dict:
     """Generates structured payload for CERT-In 6-hour reporting compliance."""
     first_event_ts = events[0].get("timestamp") if events else incident.get("timestamp")
@@ -579,6 +751,10 @@ def _build_cert_in_report(
         },
         "repeated_pattern_indicator": hist_details.get("pattern_matched", False),
         "prior_incident_reference": hist_details.get("historical_incident_id"),
+        "cert_in_context": cert_in_context or {},
+        "matched_advisories": (cert_in_context or {}).get("references", []),
+        "matched_threat_vectors": (cert_in_context or {}).get("threat_vectors", []),
+        "recommended_remediation_actions": (cert_in_context or {}).get("recommended_actions", []),
         "regulatory_compliance_checklist": {
             "csso_notified": True,
             "forensic_logs_frozen": True,
