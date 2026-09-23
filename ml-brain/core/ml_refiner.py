@@ -240,18 +240,29 @@ def train_model(feedback_records: list[dict]) -> dict:
         }
 
     # Split for validation
-    if len(X_arr) >= 10:
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_arr, y_arr, test_size=0.2, random_state=42, stratify=y_arr
-        )
-    else:
-        X_train, y_train = X_arr, y_arr
-        X_val, y_val = X_arr, y_arr
+    try:
+        if len(X_arr) >= 10:
+            from collections import Counter
+            class_counts = Counter(y_arr)
+            can_stratify = all(count >= 2 for count in class_counts.values())
+            X_train, X_val, y_train, y_val = train_test_split(
+                X_arr, y_arr, test_size=0.2, random_state=42, stratify=y_arr if can_stratify else None
+            )
+        else:
+            X_train, y_train = X_arr, y_arr
+            X_val, y_val = X_arr, y_arr
 
-    clf = RandomForestClassifier(n_estimators=50, max_depth=5, random_state=42)
-    clf.fit(X_train, y_train)
+        clf = RandomForestClassifier(n_estimators=50, max_depth=5, random_state=42)
+        clf.fit(X_train, y_train)
 
-    val_accuracy = accuracy_score(y_val, clf.predict(X_val))
+        val_accuracy = accuracy_score(y_val, clf.predict(X_val))
+    except Exception as exc:
+        logger.error("ML retrain exception during training: %s", exc)
+        return {
+            "success": False,
+            "reason": f"Training failed: {exc}",
+            "samples": len(feedback_records),
+        }
 
     # Load current model accuracy for comparison
     if _model_loaded and _model is not None and len(X_val) >= 2:

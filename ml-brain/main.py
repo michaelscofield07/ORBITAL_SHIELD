@@ -295,7 +295,11 @@ async def get_active_correlations():
             status=inc["status"],
             satellite_id=inc["satellite_id"],
             rule_name=inc["rule_name"],
-            related_events_count=len(inc["related_events"])
+            related_events_count=len(inc.get("related_events") or []),
+            description=inc.get("description"),
+            confidence=inc.get("confidence"),
+            related_events=inc.get("related_events") or [],
+            action=inc.get("action"),
         )
         for inc in incidents
     ]

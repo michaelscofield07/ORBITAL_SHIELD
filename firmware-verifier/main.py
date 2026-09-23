@@ -189,8 +189,8 @@ def verify_sample_tampered() -> FirmwareSecurityEvent:
 
 
 def run():
-    """Start uvicorn server on port 8003."""
-    uvicorn.run("main:app", host="0.0.0.0", port=8003, reload=True)
+    """Start uvicorn server on port 8003 (or FIRMWARE_PORT env var)."""
+    uvicorn.run("main:app", host="0.0.0.0", port=_FIRMWARE_PORT, reload=True)
 
 
 if __name__ == "__main__":

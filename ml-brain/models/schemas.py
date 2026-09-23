@@ -223,6 +223,10 @@ class IncidentSummary(BaseModel):
     satellite_id: str
     rule_name:   str
     related_events_count: int
+    description: Optional[str] = None
+    confidence:  Optional[float] = None
+    related_events: List[str] = Field(default_factory=list)
+    action:      Optional[str] = None
 
 
 # ─────────────────────────────────────────────────────────────
