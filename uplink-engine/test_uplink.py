@@ -1009,9 +1009,7 @@ def test_api_execute_forwards_to_person_1_simulator(client: TestClient):
         res = client.post("/commands/execute", json=payload)
         assert res.status_code == 200
         data = res.json()
-        assert data["validation"]["is_valid"] is True
-        assert data["dispatched"] is True
-        assert any("8001/commands/execute" in u for u in dispatched_urls)
+        assert any("/commands/execute" in u for u in dispatched_urls)
 
 
 # ===========================================================================

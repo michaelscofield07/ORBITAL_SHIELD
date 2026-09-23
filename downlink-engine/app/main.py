@@ -70,6 +70,16 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(downlink_router)
 
+@app.get("/downlink/health", tags=["Health"], summary="Downlink health alias")
+def downlink_health_alias():
+    return {
+        "status": "healthy",
+        "module": settings.MODULE_NAME,
+        "version": settings.VERSION,
+        "model_loaded": settings.MODEL_PATH.exists(),
+        "database": "connected"
+    }
+
 
 # Global Exception Handlers
 @app.exception_handler(RequestValidationError)

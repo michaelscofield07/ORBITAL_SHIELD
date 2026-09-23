@@ -23,21 +23,31 @@ import uuid
 # ─────────────────────────────────────────────────────────────
 
 class SourceModule(str, Enum):
-    DOWNLINK  = "DOWNLINK"
-    UPLINK    = "UPLINK"
-    FIRMWARE  = "FIRMWARE"
-    ACCESS    = "ACCESS"
-    ML_BRAIN  = "ML_BRAIN"   # this module's own output source label
+    DOWNLINK    = "DOWNLINK"
+    UPLINK      = "UPLINK"
+    FIRMWARE    = "FIRMWARE"
+    ACCESS      = "ACCESS"
+    ML_BRAIN    = "ML_BRAIN"   # this module's own output source label
+    CISO_NOTES  = "CISO_NOTES"
+    CERT_IN     = "CERT_IN"
+
+
+class AuthorizationStatus(str, Enum):
+    AUTHORIZED         = "AUTHORIZED"
+    UNAUTHORIZED       = "UNAUTHORIZED"
+    SUSPICIOUS         = "SUSPICIOUS"          # requires verification
+    VERIFIED_RECTIFIED = "VERIFIED_RECTIFIED"  # verified by CISO or historical baseline
 
 
 class SeverityLevel(str, Enum):
+    INFO     = "INFO"
     LOW      = "LOW"
     MEDIUM   = "MEDIUM"
     HIGH     = "HIGH"
     CRITICAL = "CRITICAL"
 
     # Ordered comparison support
-    _order = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
+    _order = {"INFO": -1, "LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
 
     def __lt__(self, other: "SeverityLevel") -> bool:
         return self._order[self.value] < self._order[other.value]
@@ -53,16 +63,21 @@ class SeverityLevel(str, Enum):
 
 
 class ActionType(str, Enum):
-    REVIEW       = "REVIEW"
-    MONITOR      = "MONITOR"
-    HUMAN_REVIEW = "HUMAN_REVIEW"
-    ALERT        = "ALERT"
-    LOG          = "LOG"
+    REVIEW         = "REVIEW"
+    MONITOR        = "MONITOR"
+    HUMAN_REVIEW   = "HUMAN_REVIEW"
+    ALERT          = "ALERT"
+    LOG            = "LOG"
+    FLAG           = "FLAG"
+    QUARANTINE     = "QUARANTINE"
+    BLOCK_ADVISORY = "BLOCK_ADVISORY"
 
 
 class VerdictType(str, Enum):
-    CONFIRMED_REAL = "CONFIRMED_REAL"
-    FALSE_POSITIVE = "FALSE_POSITIVE"
+    CONFIRMED_REAL      = "CONFIRMED_REAL"
+    FALSE_POSITIVE      = "FALSE_POSITIVE"
+    RECTIFIED           = "RECTIFIED"
+    VERIFIED_LEGITIMATE = "VERIFIED_LEGITIMATE"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -90,6 +105,18 @@ class IncomingEvent(BaseModel):
     operator_id:   Optional[str]  = Field(None, description="Operator responsible (if attributable)")
     session_id:    Optional[str]  = Field(None, description="Operator session (if attributable)")
 
+    # Common Event Model extensions
+    actor:                Optional[str]  = Field(None, description="Acting user, operator, or automated process")
+    source_ip:            Optional[str]  = Field(None, description="Simulated client/source IP address")
+    destination_ip:       Optional[str]  = Field(None, description="Simulated destination IP address")
+    resource:             Optional[str]  = Field(None, description="Target resource (database, file, subsystem)")
+    authorization_status: Optional[str]  = Field(None, description="AUTHORIZED / UNAUTHORIZED / SUSPICIOUS / VERIFIED_RECTIFIED")
+    data_access:          Optional[Dict[str, Any]] = Field(default_factory=dict, description="Details on database, tables, files accessed")
+    firmware_info:        Optional[Dict[str, Any]] = Field(default_factory=dict, description="Firmware hash, artifact, version details")
+    packet_info:          Optional[Dict[str, Any]] = Field(default_factory=dict, description="Command packet/request info")
+    raw_log:              Optional[Dict[str, Any]] = Field(default_factory=dict, description="Original raw event payload untouched")
+    ciso_notes:           Optional[str]  = Field(None, description="CISO feedback or observations")
+
     @field_validator("event_id")
     @classmethod
     def event_id_not_blank(cls, v: str) -> str:
@@ -104,7 +131,10 @@ class IncomingEvent(BaseModel):
             raise ValueError("satellite_id must not be blank")
         return v.strip().upper()
 
-    model_config = {"json_schema_extra": {"example": {
+    model_config = {
+        "extra": "allow",
+        "json_schema_extra": {
+            "example": {
         "event_id": "EVT-100",
         "timestamp": "2026-08-24T12:00:00Z",
         "source": "DOWNLINK",
@@ -160,6 +190,16 @@ class CorrelationIncident(BaseModel):
     reviewed_by:     Optional[str] = None
     review_notes:    Optional[str] = None
     reviewed_at:     Optional[datetime] = None
+
+    # Model 1 Understanding & Summarization extensions
+    authorization_status:        str           = Field(default="UNAUTHORIZED", description="AUTHORIZED / UNAUTHORIZED / SUSPICIOUS / VERIFIED_RECTIFIED")
+    authorization_reason:        Optional[str] = Field(None, description="Forensic explanation of WHY this authorization status was assigned")
+    unauthorized_chain:          List[Dict[str, Any]] = Field(default_factory=list, description="Reconstructed chain of unauthorized & contextual events")
+    data_access_summary:         Optional[Dict[str, Any]] = Field(default_factory=dict, description="Summary of all databases, files, and records accessed")
+    historical_pattern_matched:  bool          = Field(default=False, description="True if a previous identical attack pattern was found in database")
+    historical_pattern_details:  Optional[Dict[str, Any]] = Field(default_factory=dict, description="Historical data access and comparison details")
+    incident_document_md:        Optional[str] = Field(None, description="Complete human-readable incident document for CISO & CERT-In")
+    cert_in_report:              Optional[Dict[str, Any]] = Field(default_factory=dict, description="CERT-In 6-hour audit & compliance reporting block")
 
 
 class IncidentSummary(BaseModel):
@@ -267,3 +307,49 @@ class AuditEvent(BaseModel):
     related_events: List[str]
     action:         str
     risk_score:     int
+
+
+# ─────────────────────────────────────────────────────────────
+# MODEL 1 — INCIDENT DOCUMENT & EXTERNAL CONTEXT SCHEMAS
+# ─────────────────────────────────────────────────────────────
+
+class IncidentDocumentResponse(BaseModel):
+    incident_id:                 str
+    timestamp:                   str
+    satellite_id:                str
+    event_type:                  str
+    severity:                    str
+    risk_score:                  int
+    authorization_status:        str
+    authorization_reason:        str
+    document_markdown:           str
+    incident_document_md:        Optional[str] = None
+    unauthorized_event_chain:    List[Dict[str, Any]]
+    data_access_summary:         Dict[str, Any]
+    historical_comparison:       Dict[str, Any]
+    cert_in_compliance:          Dict[str, Any]
+
+
+class CisoNoteRequest(BaseModel):
+    satellite_id:                Optional[str] = None
+    incident_id:                 Optional[str] = None
+    operator_id:                 Optional[str] = None
+    author:                      str = "CISO"
+    notes:                       str
+    classification:              Optional[str] = "OBSERVATION"
+    action_recommended:          Optional[str] = None
+
+
+class CertInSummaryRequest(BaseModel):
+    summary_id:                  Optional[str] = None
+    title:                       Optional[str] = None
+    severity:                    str = "HIGH"
+    details:                     Optional[str] = None
+    cert_in_reference:           Optional[str] = None
+    summary:                     Optional[str] = None
+    incident_id:                 Optional[str] = None
+    satellite_id:                Optional[str] = None
+    threat_vectors:              List[str] = Field(default_factory=list)
+    recommended_actions:         List[str] = Field(default_factory=list)
+    mandate_actions:             List[str] = Field(default_factory=list)
+

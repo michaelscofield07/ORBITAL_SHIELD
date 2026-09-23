@@ -40,6 +40,11 @@ All 11 critical integration fixes are active:
 #### 1. One-Click Launcher
 From the repository root (`ORBITAL_SHIELD`), run the launcher script:
 
+* **Linux / macOS**:
+  ```bash
+  chmod +x start_all.sh
+  ./start_all.sh
+  ```
 * **PowerShell**:
   ```powershell
   .\start_all.ps1
@@ -150,3 +155,51 @@ You can verify any microservice's health independently via HTTP GET:
 | Uplink Engine | `http://localhost:8004/health` | `{"status": "HEALTHY", "module": "uplink_security_engine"}` |
 | ML Brain | `http://localhost:8005/` | `{"status": "OK", "service": "ORBITAL SHIELD..."}` |
 | Audit Service | `http://localhost:8006/health` | `{"status": "HEALTHY", "service": "audit"}` |
+
+---
+
+## 6. Model 1 Forensic Dossier & CERT-In Compliance Verification
+
+The ML Correlation Brain includes **Model 1: Incident Understanding, Correlation, Summarization & Reporting**.
+
+### 1. View Markdown Forensic Dossier
+Retrieve the comprehensive forensic Markdown dossier generated automatically for any correlated incident:
+```bash
+curl -s http://localhost:8005/correlations/{INCIDENT_ID}/document | jq -r .incident_document_md
+```
+The dossier includes:
+- Executive CISO Summary & Risk Score
+- Temporal Kill-Chain Timeline across Subsystems
+- Attack Narrative & Root-Cause Attribution
+- Impact Assessment on Orbit & Ground Station Assets
+- Mitigation Action Plan & SPARTA Matrix Reference
+
+### 2. View CERT-In 6-Hour Compliance Report
+Retrieve the structured JSON payload compliant with Indian CERT-In statutory requirements (Mandatory 6-hour cybersecurity incident reporting):
+```bash
+curl -s http://localhost:8005/correlations/{INCIDENT_ID}/cert-in | jq .
+```
+The payload includes:
+- `cert_in_regulatory_window_hours`: `6`
+- `affected_entity_type`: `Space Ground Station / Satellite TT&C Infrastructure`
+- `satellite_id`, `impacted_systems`, `incident_type`, `severity`
+- `mandate_actions`: Mandatory mitigation steps and preservation instructions
+
+### 3. Ingest Human CISO Observations
+```bash
+curl -X POST http://localhost:8005/ciso/notes \
+  -H "Content-Type: application/json" \
+  -d '{
+    "incident_id": "INC-001",
+    "satellite_id": "SAT-EO-01",
+    "notes": "Emergency key rotation executed by CISO team",
+    "operator_id": "CISO-OP-1",
+    "action_recommended": "ROTATE_CRYPTO_KEYS"
+  }'
+```
+
+### 4. Query Historical Attack Patterns
+```bash
+curl -s http://localhost:8005/patterns/historical | jq .
+```
+

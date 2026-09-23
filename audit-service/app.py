@@ -15,7 +15,7 @@ app = FastAPI(title="Orbital Shield — Audit Service")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -35,4 +35,20 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "healthy", "service": "audit-service"}
+    return {"status": "healthy", "service": "audit-service"}
+
+
+if __name__ == "__main__":
+    import os
+    import uvicorn
+    from pathlib import Path
+    try:
+        from dotenv import load_dotenv
+        _env = Path(__file__).resolve().parent.parent / ".env"
+        if _env.exists():
+            load_dotenv(dotenv_path=_env, override=False)
+    except ImportError:
+        pass
+    port = int(os.getenv("AUDIT_PORT", "8006"))
+    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=True)
+

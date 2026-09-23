@@ -1,6 +1,7 @@
 """Unit tests for Canonical SecurityEvent schema and event synthesis."""
 
 import pytest
+from datetime import datetime, timezone
 from app.schemas.security_event import SecurityEvent
 from app.schemas.telemetry import TelemetryInput
 from app.services.telemetry_processor import TelemetryProcessor
@@ -42,7 +43,7 @@ def test_thermal_spoof_generates_security_event(db_session):
     """Thermal spoofing generates an event with source=DOWNLINK and action=REVIEW."""
     processor = TelemetryProcessor(db=db_session)
     packet = TelemetryInput(
-        timestamp="2026-08-25T02:14:30Z",
+        timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         satellite_id="SAT-EO-01",
         sequence_number=1001,
         temperature=82.0,

@@ -159,6 +159,8 @@ class SecurityEvent(BaseModel):
     action: CommandAction = Field(description="Action taken: ALLOW, BLOCK, HOLD")
     evidence: Dict[str, Any] = Field(default_factory=dict, description="Diagnostic and contextual evidence")
     related_events: List[str] = Field(default_factory=list, description="Associated event IDs")
+    operator_id: Optional[str] = Field(default=None, description="Responsible operator ID")
+    session_id: Optional[str] = Field(default=None, description="Active session ID")
 
 
 class CheckResult(BaseModel):

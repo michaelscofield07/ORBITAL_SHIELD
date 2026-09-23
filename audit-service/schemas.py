@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 
 class Severity(str, Enum):
+    INFO = "INFO"
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
@@ -23,6 +24,8 @@ class Action(str, Enum):
     BLOCK = "BLOCK"
     HUMAN_REVIEW = "HUMAN_REVIEW"
     MONITOR = "MONITOR"
+    ALERT = "ALERT"
+    LOG = "LOG"
 
 
 class SecurityEvent(BaseModel):

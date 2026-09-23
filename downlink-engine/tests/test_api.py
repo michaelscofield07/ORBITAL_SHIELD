@@ -2,9 +2,13 @@
 
 import pytest
 import json
+from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 from app.utils.hashing import compute_telemetry_hash
+
+NOW = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+TODAY = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 def test_health_endpoint(client: TestClient):
@@ -21,7 +25,7 @@ def test_health_endpoint(client: TestClient):
 def test_analyze_normal_telemetry(client: TestClient):
     """POST /downlink/analyze with normal telemetry packet."""
     payload = {
-        "timestamp": "2026-08-25T02:14:30Z",
+        "timestamp": NOW,
         "satellite_id": "SAT-EO-01",
         "sequence_number": 1001,
         "temperature": 23.5,
@@ -45,7 +49,7 @@ def test_analyze_normal_telemetry(client: TestClient):
 def test_analyze_anomalous_telemetry(client: TestClient):
     """POST /downlink/analyze with thermal anomaly generates a SecurityEvent."""
     payload = {
-        "timestamp": "2026-08-25T02:14:30Z",
+        "timestamp": NOW,
         "satellite_id": "SAT-EO-01",
         "sequence_number": 1002,
         "temperature": 82.0,
@@ -71,7 +75,7 @@ def test_get_events_endpoint(client: TestClient):
     """GET /downlink/events returns recorded security events with filtering."""
     # Trigger an anomalous packet to store an event
     payload = {
-        "timestamp": "2026-08-25T02:14:30Z",
+        "timestamp": NOW,
         "satellite_id": "SAT-EO-01",
         "sequence_number": 2001,
         "temperature": 85.0,
@@ -92,7 +96,7 @@ def test_get_daily_report_endpoint(client: TestClient):
     """GET /downlink/report generates comprehensive summary report."""
     # Submit one normal and one anomaly
     p1 = {
-        "timestamp": "2026-08-25T02:00:00Z",
+        "timestamp": NOW,
         "satellite_id": "SAT-EO-01",
         "sequence_number": 3001,
         "temperature": 23.0,
@@ -100,7 +104,7 @@ def test_get_daily_report_endpoint(client: TestClient):
         "signal_strength": -70.0
     }
     p2 = {
-        "timestamp": "2026-08-25T02:00:06Z",
+        "timestamp": NOW,
         "satellite_id": "SAT-EO-01",
         "sequence_number": 3002,
         "temperature": 85.0,
@@ -110,7 +114,7 @@ def test_get_daily_report_endpoint(client: TestClient):
     client.post("/downlink/analyze", json=p1)
     client.post("/downlink/analyze", json=p2)
 
-    response = client.get("/downlink/report?satellite_id=SAT-EO-01&date=2026-08-25")
+    response = client.get(f"/downlink/report?satellite_id=SAT-EO-01&date={TODAY}")
     assert response.status_code == 200
     report = response.json()
 
@@ -148,7 +152,7 @@ def test_validation_error_handling(client: TestClient):
 def test_websocket_streaming(client: TestClient):
     """WS /downlink/stream establishes connection and processes streaming telemetry."""
     payload = {
-        "timestamp": "2026-08-25T02:00:00Z",
+        "timestamp": NOW,
         "satellite_id": "SAT-EO-01",
         "sequence_number": 4001,
         "temperature": 23.5,

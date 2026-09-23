@@ -1,9 +1,10 @@
 """Downlink Security Engine primary API routes and WebSocket streaming."""
 
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, BackgroundTasks, status
 from sqlalchemy.orm import Session
 import json
+import httpx
 
 from app.db.database import get_db
 from app.schemas.telemetry import (
@@ -24,6 +25,25 @@ logger = get_logger("api.downlink")
 router = APIRouter(prefix=settings.API_V1_PREFIX, tags=["Downlink Security"])
 
 
+async def _forward_downlink_event(event: SecurityEvent) -> None:
+    """Asynchronously forward security event to ML Brain and Audit Service."""
+    payload = event.model_dump(mode="json")
+    async with httpx.AsyncClient(timeout=2.0) as client:
+        # 1. Forward to ML Brain
+        try:
+            res_ml = await client.post(settings.MLBRAIN_URL, json=payload)
+            logger.info(f"Dispatched downlink event '{event.event_id}' to ML Brain ({settings.MLBRAIN_URL}) -> Status {res_ml.status_code}")
+        except Exception as exc:
+            logger.warning(f"Downlink event forward to ML Brain ({settings.MLBRAIN_URL}) failed: {exc}")
+
+        # 2. Forward to Audit Service
+        try:
+            res_aud = await client.post(settings.AUDIT_URL, json=payload)
+            logger.info(f"Dispatched downlink event '{event.event_id}' to Audit Service ({settings.AUDIT_URL}) -> Status {res_aud.status_code}")
+        except Exception as exc:
+            logger.warning(f"Downlink event forward to Audit Service ({settings.AUDIT_URL}) failed: {exc}")
+
+
 @router.post(
     "/analyze",
     response_model=TelemetryAnalysisResponse,
@@ -31,14 +51,17 @@ router = APIRouter(prefix=settings.API_V1_PREFIX, tags=["Downlink Security"])
     summary="Analyze Ingested Downlink Telemetry Packet",
     description="Ingests a single satellite telemetry packet, performs deterministic integrity checks and Isolation Forest anomaly analysis, stores records, and returns full security findings with any generated SecurityEvent and verification event."
 )
-def analyze_telemetry(
+async def analyze_telemetry(
     telemetry: TelemetryInput,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ) -> TelemetryAnalysisResponse:
     """Analyze a single downlink telemetry packet."""
     try:
         processor = TelemetryProcessor(db=db)
         response = processor.process_telemetry(telemetry)
+        if response.security_event:
+            background_tasks.add_task(_forward_downlink_event, response.security_event)
         return response
     except ModelNotLoadedException as e:
         logger.error(f"ML Model error during telemetry processing: {e}")

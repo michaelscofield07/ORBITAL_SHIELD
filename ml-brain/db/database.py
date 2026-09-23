@@ -138,19 +138,44 @@ def init_db() -> None:
         );
         """)
 
-        # ── Safe migrations for existing databases ────────────────────────────
-        # These are no-ops on a fresh DB (columns already exist); they add the
-        # columns to any pre-existing DB without destroying data.
-        for migration_sql in [
-            "ALTER TABLE incidents    ADD COLUMN features_json TEXT",
-            "ALTER TABLE feedback_log ADD COLUMN features_json TEXT",
-        ]:
-            try:
-                conn.execute(migration_sql)
-            except Exception:
-                pass  # column already exists — safe to ignore
+        # ─── Safe, Non-Destructive Migrations for Features & Model 1 ───
+        _add_column_if_missing(conn, "incidents", "features_json", "TEXT")
+        _add_column_if_missing(conn, "feedback_log", "features_json", "TEXT")
+
+        _add_column_if_missing(conn, "events", "actor", "TEXT")
+        _add_column_if_missing(conn, "events", "device_id", "TEXT")
+        _add_column_if_missing(conn, "events", "source_ip", "TEXT")
+        _add_column_if_missing(conn, "events", "destination_ip", "TEXT")
+        _add_column_if_missing(conn, "events", "resource", "TEXT")
+        _add_column_if_missing(conn, "events", "authorization_status", "TEXT")
+        _add_column_if_missing(conn, "events", "authorization_reason", "TEXT")
+        _add_column_if_missing(conn, "events", "data_access", "TEXT DEFAULT '{}'")
+        _add_column_if_missing(conn, "events", "firmware_info", "TEXT DEFAULT '{}'")
+        _add_column_if_missing(conn, "events", "packet_info", "TEXT DEFAULT '{}'")
+        _add_column_if_missing(conn, "events", "raw_log", "TEXT DEFAULT '{}'")
+        _add_column_if_missing(conn, "events", "ciso_notes", "TEXT")
+
+        _add_column_if_missing(conn, "incidents", "authorization_status", "TEXT DEFAULT 'UNAUTHORIZED'")
+        _add_column_if_missing(conn, "incidents", "authorization_reason", "TEXT")
+        _add_column_if_missing(conn, "incidents", "unauthorized_chain", "TEXT DEFAULT '[]'")
+        _add_column_if_missing(conn, "incidents", "data_access_summary", "TEXT DEFAULT '{}'")
+        _add_column_if_missing(conn, "incidents", "historical_pattern_matched", "INTEGER DEFAULT 0")
+        _add_column_if_missing(conn, "incidents", "historical_pattern_details", "TEXT DEFAULT '{}'")
+        _add_column_if_missing(conn, "incidents", "incident_document_md", "TEXT")
+        _add_column_if_missing(conn, "incidents", "cert_in_report", "TEXT DEFAULT '{}'")
+
+        _add_column_if_missing(conn, "feedback_log", "is_rectified", "INTEGER DEFAULT 0")
+        _add_column_if_missing(conn, "feedback_log", "verified_pattern_json", "TEXT")
 
     logger.info("Database initialised at %s", get_db_path())
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, col_type: str) -> None:
+    """Safely adds a column to an existing SQLite table if it does not already exist."""
+    cursor = conn.execute(f"PRAGMA table_info({table})")
+    cols = [row[1] for row in cursor.fetchall()]
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -160,11 +185,14 @@ def init_db() -> None:
 def insert_event(event: dict) -> None:
     with get_connection() as conn:
         conn.execute("""
-            INSERT OR IGNORE INTO events
+            INSERT OR REPLACE INTO events
             (event_id, timestamp, source, satellite_id, event_type,
              severity, confidence, description, action, evidence,
-             related_events, operator_id, session_id, ingested_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             related_events, operator_id, session_id, ingested_at,
+             actor, device_id, source_ip, destination_ip, resource,
+             authorization_status, authorization_reason, data_access,
+             firmware_info, packet_info, raw_log, ciso_notes)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             event["event_id"],
             event["timestamp"],
@@ -175,11 +203,23 @@ def insert_event(event: dict) -> None:
             event["confidence"],
             event["description"],
             event["action"],
-            json.dumps(event.get("evidence", {})),
-            json.dumps(event.get("related_events", [])),
+            json.dumps(event.get("evidence", {}), default=str),
+            json.dumps(event.get("related_events", []), default=str),
             event.get("operator_id"),
             event.get("session_id"),
             datetime.now(timezone.utc).isoformat(),
+            event.get("actor") or event.get("operator_id"),
+            event.get("device_id"),
+            event.get("source_ip"),
+            event.get("destination_ip"),
+            event.get("resource"),
+            event.get("authorization_status"),
+            event.get("authorization_reason"),
+            json.dumps(event.get("data_access", {}), default=str),
+            json.dumps(event.get("firmware_info", {}), default=str),
+            json.dumps(event.get("packet_info", {}), default=str),
+            json.dumps(event.get("raw_log", {}), default=str),
+            event.get("ciso_notes"),
         ))
 
 
@@ -219,12 +259,14 @@ def insert_incident(incident: dict) -> None:
 
     with get_connection() as conn:
         conn.execute("""
-            INSERT OR IGNORE INTO incidents
+            INSERT OR REPLACE INTO incidents
             (event_id, timestamp, source, event_type, severity, confidence,
              description, related_events, action, risk_score, rule_id, rule_name,
              rule_score, ml_adjustment, satellite_id, operator_id, session_id,
-             status, features_json, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             status, features_json, created_at, authorization_status, authorization_reason,
+             unauthorized_chain, data_access_summary, historical_pattern_matched,
+             historical_pattern_details, incident_document_md, cert_in_report)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             incident["event_id"],
             incident["timestamp"],
@@ -233,7 +275,7 @@ def insert_incident(incident: dict) -> None:
             incident["severity"],
             incident["confidence"],
             incident["description"],
-            json.dumps(incident["related_events"]),
+            json.dumps(incident["related_events"], default=str),
             incident.get("action", "HUMAN_REVIEW"),
             incident["risk_score"],
             incident["rule_id"],
@@ -246,6 +288,14 @@ def insert_incident(incident: dict) -> None:
             incident.get("status", "OPEN"),
             features_json,
             datetime.now(timezone.utc).isoformat(),
+            incident.get("authorization_status", "UNAUTHORIZED"),
+            incident.get("authorization_reason"),
+            json.dumps(incident.get("unauthorized_chain", []), default=str),
+            json.dumps(incident.get("data_access_summary", {}), default=str),
+            1 if incident.get("historical_pattern_matched") else 0,
+            json.dumps(incident.get("historical_pattern_details", {}), default=str),
+            incident.get("incident_document_md"),
+            json.dumps(incident.get("cert_in_report", {}), default=str),
         ))
 
 
@@ -291,16 +341,17 @@ def count_open_incidents() -> int:
 
 def insert_feedback(incident_id: str, verdict: str, reviewer: str,
                     notes: str | None, rule_id: str | None, risk_score: int | None,
-                    features_json: str | None = None) -> None:
+                    features_json: str | None = None,
+                    is_rectified: int = 0, verified_pattern_json: str | None = None) -> None:
     """Store CISO verdict. features_json is the serialised feature vector snapshotted
     at correlation time — used by train_model() to avoid placeholder drift."""
     with get_connection() as conn:
         conn.execute("""
             INSERT INTO feedback_log
-            (incident_id, verdict, reviewer, notes, rule_id, risk_score, features_json, submitted_at)
-            VALUES (?,?,?,?,?,?,?,?)
+            (incident_id, verdict, reviewer, notes, rule_id, risk_score, features_json, submitted_at, is_rectified, verified_pattern_json)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
         """, (incident_id, verdict, reviewer, notes, rule_id, risk_score,
-              features_json, datetime.now(timezone.utc).isoformat()))
+              features_json, datetime.now(timezone.utc).isoformat(), is_rectified, verified_pattern_json))
 
 
 def fetch_unused_feedback() -> list[dict]:
@@ -386,10 +437,136 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)
     d["evidence"] = json.loads(d.get("evidence") or "{}")
     d["related_events"] = json.loads(d.get("related_events") or "[]")
+    if "data_access" in d:
+        d["data_access"] = json.loads(d.get("data_access") or "{}")
+    if "firmware_info" in d:
+        d["firmware_info"] = json.loads(d.get("firmware_info") or "{}")
+    if "packet_info" in d:
+        d["packet_info"] = json.loads(d.get("packet_info") or "{}")
+    if "raw_log" in d:
+        d["raw_log"] = json.loads(d.get("raw_log") or "{}")
     return d
 
 
 def _incident_row_to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)
     d["related_events"] = json.loads(d.get("related_events") or "[]")
+    if "unauthorized_chain" in d:
+        d["unauthorized_chain"] = json.loads(d.get("unauthorized_chain") or "[]")
+    if "data_access_summary" in d:
+        d["data_access_summary"] = json.loads(d.get("data_access_summary") or "{}")
+    if "historical_pattern_details" in d:
+        d["historical_pattern_details"] = json.loads(d.get("historical_pattern_details") or "{}")
+    if "cert_in_report" in d:
+        d["cert_in_report"] = json.loads(d.get("cert_in_report") or "{}")
     return d
+
+
+# ─────────────────────────────────────────────────────────────
+# Historical Pattern & Verified / Rectified Data Helpers
+# ─────────────────────────────────────────────────────────────
+
+def search_historical_patterns(rule_id: str | None = None, event_type: str | None = None,
+                                exclude_incident_id: str | None = None, limit: int = 5) -> list[dict]:
+    """
+    Search historical incidents in the database that match a given rule_id
+    or event_type, excluding the currently evaluated incident.
+    """
+    with get_connection() as conn:
+        query = "SELECT * FROM incidents WHERE 1=1"
+        params = []
+        if rule_id:
+            query += " AND rule_id = ?"
+            params.append(rule_id)
+        if event_type:
+            query += " AND event_type = ?"
+            params.append(event_type)
+        if exclude_incident_id:
+            query += " AND event_id != ?"
+            params.append(exclude_incident_id)
+
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+
+        rows = conn.execute(query, tuple(params)).fetchall()
+        return [_incident_row_to_dict(r) for r in rows]
+
+
+def fetch_historical_data_access(matched_incident_ids: list[str]) -> list[dict]:
+    """
+    Retrieves all data access records from contributing events of historical incidents.
+    """
+    if not matched_incident_ids:
+        return []
+    with get_connection() as conn:
+        placeholders = ",".join("?" * len(matched_incident_ids))
+        query = f"SELECT * FROM incidents WHERE event_id IN ({placeholders})"
+        inc_rows = conn.execute(query, tuple(matched_incident_ids)).fetchall()
+        incidents = [_incident_row_to_dict(r) for r in inc_rows]
+
+        all_event_ids = []
+        for inc in incidents:
+            all_event_ids.extend(inc.get("related_events", []))
+
+        if not all_event_ids:
+            return []
+
+        ev_placeholders = ",".join("?" * len(all_event_ids))
+        ev_query = f"SELECT * FROM events WHERE event_id IN ({ev_placeholders})"
+        ev_rows = conn.execute(ev_query, tuple(all_event_ids)).fetchall()
+        events = [_row_to_dict(r) for r in ev_rows]
+
+        data_accesses = []
+        for ev in events:
+            da = ev.get("data_access") or {}
+            if da and any(v for v in da.values()):
+                data_accesses.append({
+                    "event_id": ev["event_id"],
+                    "timestamp": ev["timestamp"],
+                    "actor": ev.get("actor") or ev.get("operator_id"),
+                    "data_access": da,
+                    "resource": ev.get("resource"),
+                })
+        return data_accesses
+
+
+def fetch_verified_rectified_signatures() -> list[dict]:
+    """
+    Fetches all verdicts where CISO verified the activity as legitimate,
+    rectified, or false positive.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM feedback_log WHERE verdict IN ('CONFIRMED_REAL', 'FALSE_POSITIVE', 'RECTIFIED', 'VERIFIED_LEGITIMATE') ORDER BY submitted_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def is_event_or_pattern_rectified(event_dict: dict) -> tuple[bool, str | None]:
+    """
+    Checks whether the incoming event matches a previously rectified or
+    verified-legitimate operation, preventing redundant alerts.
+    """
+    actor = event_dict.get("actor") or event_dict.get("operator_id")
+    rule_id = event_dict.get("rule_id")
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM feedback_log WHERE verdict IN ('RECTIFIED', 'VERIFIED_LEGITIMATE', 'FALSE_POSITIVE') ORDER BY submitted_at DESC LIMIT 50"
+        ).fetchall()
+        for r in rows:
+            vp = r["verified_pattern_json"]
+            if vp:
+                try:
+                    pattern = json.loads(vp)
+                    if actor and pattern.get("actor") == actor:
+                        return True, f"Operator/Actor {actor} matches verified legitimate baseline ({r['verdict']}): {r['notes']}"
+                    if rule_id and pattern.get("rule_id") == rule_id:
+                        return True, f"Rule {rule_id} matches verified pattern: {r['notes']}"
+                except Exception:
+                    pass
+            if rule_id and r["rule_id"] == rule_id and r["verdict"] in ('RECTIFIED', 'VERIFIED_LEGITIMATE'):
+                return True, f"Activity under {rule_id} was previously rectified by {r['reviewer']}: {r['notes']}"
+
+    return False, None
+

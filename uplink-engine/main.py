@@ -82,8 +82,15 @@ async def dispatch_security_event_to_external_services(event: SecurityEvent) -> 
     """
     # B8: build separate payloads — ML Brain needs ActionType, audit keeps CommandAction
     base_dict = event.model_dump(mode="json")
+    op_id = getattr(event, "operator_id", None) or (event.evidence.get("operator_id") if isinstance(event.evidence, dict) else None)
+    sess_id = getattr(event, "session_id", None) or (event.evidence.get("session_id") if isinstance(event.evidence, dict) else None)
 
-    ml_payload = {**base_dict, "action": to_ml_brain_action(event.action)}
+    ml_payload = {
+        **base_dict,
+        "action": to_ml_brain_action(event.action),
+        "operator_id": op_id,
+        "session_id": sess_id,
+    }
     audit_payload = base_dict  # audit service accepts any string action value
 
     async def send_to_service(url: str, service_name: str, json_body: dict) -> None:
