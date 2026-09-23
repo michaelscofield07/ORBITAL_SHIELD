@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Private signing keys (Security Guardrail)
+*.key
+cosign.key
+*.pem.private
+secrets/
+.env
+
+# Temporary artifacts
+temp/
+*.tmp

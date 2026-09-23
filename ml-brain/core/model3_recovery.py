@@ -524,27 +524,72 @@ def verify_rectification(
         )
 
     # Reference timestamp: evaluate telemetry received strictly after remediation was applied
-    since_ts = remediation_applied_at
     now_iso = now_dt.isoformat()
     sat_id = inc.get("satellite_id")
+    try:
+        applied_dt = datetime.fromisoformat(remediation_applied_at.replace("Z", "+00:00"))
+        since_ts = applied_dt.isoformat()
+    except Exception:
+        applied_dt = now_dt
+        since_ts = remediation_applied_at
 
-    # Fetch post-remediation events for this spacecraft
+    # Fetch post-remediation events for this spacecraft using server-assigned ingested_at
     post_remediation_events: List[Dict[str, Any]] = []
     with db.get_connection() as conn:
         if sat_id:
             rows = conn.execute(
-                "SELECT * FROM events WHERE satellite_id = ? AND timestamp >= ? ORDER BY timestamp ASC",
+                "SELECT * FROM events WHERE satellite_id = ? AND ingested_at >= ? ORDER BY ingested_at ASC",
                 (sat_id, since_ts)
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM events WHERE timestamp >= ? ORDER BY timestamp ASC",
+                "SELECT * FROM events WHERE ingested_at >= ? ORDER BY ingested_at ASC",
                 (since_ts,)
             ).fetchall()
-        post_remediation_events = [db._row_to_dict(r) for r in rows]
+        raw_events = [db._row_to_dict(r) for r in rows]
+
+    # Exclude stale telemetry: events with timestamp far in the past relative to ingested_at or before remediation
+    for ev in raw_events:
+        is_stale = False
+        try:
+            ev_ts = datetime.fromisoformat(ev["timestamp"].replace("Z", "+00:00"))
+            ing_ts = datetime.fromisoformat(ev["ingested_at"].replace("Z", "+00:00"))
+            if (ing_ts - ev_ts).total_seconds() > 300 or ev_ts < applied_dt:
+                is_stale = True
+                logger.info(
+                    "Excluding stale telemetry event %s (timestamp=%s, ingested_at=%s, applied_at=%s)",
+                    ev.get("event_id"), ev.get("timestamp"), ev.get("ingested_at"), since_ts
+                )
+        except Exception as exc:
+            logger.warning("Could not check staleness for event %s: %s", ev.get("event_id"), exc)
+
+        if not is_stale:
+            post_remediation_events.append(ev)
+
+    rule_id = inc.get("rule_id")
+
+    # If 0 post-remediation events exist, do NOT default to RECTIFIED; return AWAITING_TELEMETRY
+    if not post_remediation_events:
+        verification_result = "AWAITING_TELEMETRY"
+        status_updated_to = inc.get("status", "OPEN")
+        evidence = {
+            "since_timestamp": since_ts,
+            "post_events_count": 0,
+            "re_fired": False,
+            "rule_evaluated": rule_id,
+            "notes": notes or "No valid telemetry events ingested since remediation was applied; awaiting post-remediation telemetry.",
+        }
+        db.update_recovery_guidance_verification(guidance["guidance_id"], "AWAITING_TELEMETRY", evidence)
+        return {
+            "incident_id": incident_id,
+            "verification_result": verification_result,
+            "verified_at": now_iso,
+            "status_updated_to": status_updated_to,
+            "evidence_summary": evidence,
+            "message": f"Breach rectification verification PENDING: 0 valid post-remediation telemetry events ingested since {since_ts}. Awaiting fresh telemetry.",
+        }
 
     # Evaluate triggering rule against post-remediation events
-    rule_id = inc.get("rule_id")
     all_rules = correlation_engine.get_rules()
     target_rule = next(
         (

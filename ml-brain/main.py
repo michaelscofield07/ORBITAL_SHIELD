@@ -25,11 +25,13 @@ import yaml
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, AsyncGenerator
+
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sse_starlette.sse import EventSourceResponse
 
 # ── Local modules ─────────────────────────────────────────────
 from models.schemas import (
@@ -41,7 +43,7 @@ from models.schemas import (
     CisoNoteRequest, CertInSummaryRequest,
     RecoveryGuidanceRecord, Model3RunRequest,
     Model3RunResponse, GuidanceReviewPayload,
-    GuidanceEditPayload, MarkAppliedPayload, VerificationResultResponse,
+    GuidanceEditPayload, MarkAppliedPayload, VerifyPayload, VerificationResultResponse,
     Model3StatusCounts, Model3StatusResponse,
     IncidentModel3StatusResponse,
     SourceModule, SeverityLevel, ActionType
@@ -70,6 +72,30 @@ logger = logging.getLogger("orbital.main")
 
 _start_time = time.time()
 _CONFIG_PATH = Path(__file__).parent / "config" / "rules.yaml"
+
+# SSE Subscribers set for live module health streaming
+_sse_subscribers: set[asyncio.Queue] = set()
+
+
+def _sse_subscribe() -> asyncio.Queue:
+    q: asyncio.Queue = asyncio.Queue(maxsize=50)
+    _sse_subscribers.add(q)
+    return q
+
+
+def _sse_unsubscribe(q: asyncio.Queue) -> None:
+    _sse_subscribers.discard(q)
+
+
+async def _broadcast_sse_event(source: str, event_type: str, timestamp: str) -> None:
+    """Push a small status message to every connected SSE client."""
+    data = json.dumps({"source": source, "event_type": event_type,
+                       "timestamp": timestamp, "status": "RECEIVED"})
+    for q in list(_sse_subscribers):
+        try:
+            q.put_nowait(data)
+        except asyncio.QueueFull:
+            pass  # slow client — drop rather than block
 
 
 @asynccontextmanager
@@ -226,6 +252,14 @@ async def ingest_event(event: IncomingEvent, background_tasks: BackgroundTasks):
         # Forward to audit module in background (detached non-blocking task)
         # Never blocks event ingestion response even if port 8006 is offline
         asyncio.create_task(_forward_to_audit(incident))
+
+    # Broadcast to SSE subscribers (additive only, does not change response)
+    background_tasks.add_task(
+        _broadcast_sse_event,
+        source=event.source.value if hasattr(event.source, "value") else str(event.source),
+        event_type=event.event_type,
+        timestamp=event.timestamp.isoformat() if hasattr(event.timestamp, "isoformat") else str(event.timestamp),
+    )
 
     return IngestResponse(
         status="ACCEPTED",
@@ -883,20 +917,20 @@ Tests whether the incident's triggering correlation rule re-fires on telemetry r
 after remediation was applied. If rule re-fires, updates incident to VERIFICATION_FAILED.
 If rule does not re-fire, updates incident to RECTIFIED and logs the resolved pattern.
 Guards:
+- Requires human CISO attribution in request body (VerifyPayload: reviewer required, notes optional).
 - Rejects with HTTP 400 if /mark-applied has not yet been executed by the CISO.
 - Rejects with HTTP 409 if called before verification_min_window_seconds has elapsed.
     """
 )
 async def verify_incident_rectification(
     id: str,
-    reviewer: str = "ciso_verification",
-    notes: Optional[str] = None
+    payload: VerifyPayload,
 ):
     try:
         result = model3_recovery.verify_rectification(
             incident_id=id,
-            reviewer=reviewer,
-            notes=notes
+            reviewer=payload.reviewer,
+            notes=payload.notes
         )
         return VerificationResultResponse(**result)
     except model3_recovery.RemediationNotAppliedError as exc:
@@ -1068,6 +1102,38 @@ async def root():
 
 
 # ─────────────────────────────────────────────────────────────
+# ROUTE 10: SSE live module health stream
+# ─────────────────────────────────────────────────────────────
+
+@app.get(
+    "/brain/stream",
+    tags=["Brain Management"],
+    summary="SSE stream — live module event notifications",
+    description="Server-Sent Events stream. Every time /events/ingest accepts an event, "
+                "a JSON message is pushed: {source, event_type, timestamp, status}. "
+                "Subscribe from the dashboard module health strip.",
+)
+async def brain_stream(request: Request):
+    q = _sse_subscribe()
+
+    async def event_generator() -> AsyncGenerator[dict, None]:
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    data = await asyncio.wait_for(q.get(), timeout=15.0)
+                    yield {"data": data}
+                except asyncio.TimeoutError:
+                    # Send a heartbeat comment so the connection stays alive
+                    yield {"comment": "heartbeat"}
+        finally:
+            _sse_unsubscribe(q)
+
+    return EventSourceResponse(event_generator())
+
+
+# ─────────────────────────────────────────────────────────────
 # Background helpers
 # ─────────────────────────────────────────────────────────────
 
@@ -1136,5 +1202,14 @@ def _config_version() -> str:
 
 
 if __name__ == "__main__":
+    import os
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8005, reload=True)
+    try:
+        from dotenv import load_dotenv
+        _env = Path(__file__).resolve().parent.parent / ".env"
+        if _env.exists():
+            load_dotenv(dotenv_path=_env, override=False)
+    except ImportError:
+        pass
+    _port = int(os.getenv("MLBRAIN_PORT", "8005"))
+    uvicorn.run("main:app", host="0.0.0.0", port=_port, reload=True)

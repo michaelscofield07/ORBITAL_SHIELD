@@ -447,10 +447,16 @@ class MarkAppliedPayload(BaseModel):
     notes:                       Optional[str] = Field(None, description="Operational notes detailing actions taken or ground changes made")
 
 
+class VerifyPayload(BaseModel):
+    """Payload for CISO to initiate post-remediation verification."""
+    reviewer:                    str = Field(..., description="CISO / Operator identity initiating verification")
+    notes:                       Optional[str] = Field(None, description="Operational notes detailing verification context or rationale")
+
+
 class VerificationResultResponse(BaseModel):
     """Response returned after running breach-rectification verification."""
     incident_id:                 str
-    verification_result:         str = Field(..., description="Outcome: PASSED or FAILED")
+    verification_result:         str = Field(..., description="Outcome: PASSED, FAILED, or AWAITING_TELEMETRY")
     verified_at:                 str
     status_updated_to:           str
     evidence_summary:            Dict[str, Any]

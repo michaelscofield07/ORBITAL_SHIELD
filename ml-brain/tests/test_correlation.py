@@ -159,10 +159,12 @@ class TestRule001CrossModuleSession:
 
     def test_rule_does_not_fire_outside_time_window(self, sliding_window, base_ts):
         from core import correlation_engine as ce
+        rule_001 = next((r for r in ce.get_rules() if r["id"] == "RULE_001"), None)
+        win = rule_001["conditions"]["time_window_seconds"] if rule_001 else 300
         events = [
             make_event("EVT-001", "ACCESS",  "SAT-1", "SUSPICIOUS_LOGIN",     "MEDIUM", session_id="S-001", base_ts=base_ts),
-            # 400 seconds later — outside the 300-second RULE_001 window
-            make_event("EVT-002", "UPLINK",  "SAT-1", "UNAUTHORIZED_COMMAND", "HIGH",   session_id="S-001", delta_seconds=400, base_ts=base_ts),
+            # Outside the RULE_001 window
+            make_event("EVT-002", "UPLINK",  "SAT-1", "UNAUTHORIZED_COMMAND", "HIGH",   session_id="S-001", delta_seconds=win + 100, base_ts=base_ts),
         ]
         for e in events:
             sliding_window.add(e)

@@ -1,0 +1,220 @@
+# ============================================================
+# ORBITAL SHIELD — Integration-Final Docker Compose
+# ============================================================
+#
+# Usage (single-machine demo):
+#   docker compose up --build
+#
+# Usage (without simulator — quick partial spin-up):
+#   docker compose --profile nosim up --build
+#
+# Usage (two-machine demo — edit .env first):
+#   # On satellite machine: docker compose up --profile sat
+#   # On ground station:   docker compose up --profile gs
+#
+# Ports mapped directly to the host:
+#   8000 → simulator
+#   8001 → downlink-engine
+#   8002 → access-security
+#   8003 → firmware-verifier
+#   8004 → uplink-engine
+#   8005 → ml-brain
+#   8006 → audit-service
+#   5173 → dashboard (Vite dev)
+# ============================================================
+
+name: orbital-shield
+
+x-common-env: &common-env
+  TZ: UTC
+  GS_HOST: ${GS_HOST:-127.0.0.1}
+  SAT_HOST: ${SAT_HOST:-127.0.0.1}
+  MLBRAIN_URL: http://ml-brain:8005/events/ingest
+  AUDIT_URL: http://audit-service:8006/audit/events
+  SIMULATOR_URL: http://simulator:8000
+  VITE_AUDIT_URL: http://${GS_HOST:-127.0.0.1}:8006
+  VITE_MLBRAIN_URL: http://${GS_HOST:-127.0.0.1}:8005
+
+services:
+
+  # ── Person 1: Satellite Simulator Gateway (optional profile) ─
+  simulator:
+    build:
+      context: ./simulator
+      dockerfile: Dockerfile
+    ports:
+      - "${SIMULATOR_PORT:-8000}:8000"
+    environment:
+      <<: *common-env
+      SIMULATOR_PORT: 8000
+    networks:
+      - orbital
+    restart: unless-stopped
+    profiles: ["", "sat"]            # empty string = default profile (always runs)
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Person 2: Downlink Telemetry Engine ─────────────────────
+  downlink-engine:
+    build:
+      context: ./downlink-engine
+      dockerfile: Dockerfile
+    ports:
+      - "${DOWNLINK_PORT:-8001}:8001"
+    environment:
+      <<: *common-env
+      DOWNLINK_PORT: 8001
+    networks:
+      - orbital
+    restart: unless-stopped
+    profiles: ["", "gs"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8001/downlink/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Person 3 / Access Security (Module 4 in code) ───────────
+  access-security:
+    build:
+      context: ./access-security
+      dockerfile: Dockerfile
+    ports:
+      - "${ACCESS_PORT:-8002}:8002"
+    environment:
+      <<: *common-env
+      ACCESS_PORT: 8002
+    networks:
+      - orbital
+    restart: unless-stopped
+    profiles: ["", "gs"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8002/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Person 3 / Firmware Verifier ────────────────────────────
+  firmware-verifier:
+    build:
+      context: ./firmware-verifier
+      dockerfile: Dockerfile
+    ports:
+      - "${FIRMWARE_PORT:-8003}:8003"
+    environment:
+      <<: *common-env
+      FIRMWARE_PORT: 8003
+    networks:
+      - orbital
+    restart: unless-stopped
+    profiles: ["", "gs"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8003/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Person 4: Uplink Command Security Engine ────────────────
+  uplink-engine:
+    build:
+      context: ./uplink-engine
+      dockerfile: Dockerfile
+    ports:
+      - "${UPLINK_PORT:-8004}:8004"
+    environment:
+      <<: *common-env
+      UPLINK_PORT: 8004
+      PERSON_1_SIMULATOR_URL: http://simulator:8000/commands/execute
+      PERSON_5_ML_CORRELATION_URL: http://ml-brain:8005/events/ingest
+      PERSON_6_AUDIT_URL: http://audit-service:8006/audit/events
+    networks:
+      - orbital
+    restart: unless-stopped
+    profiles: ["", "gs"]
+    depends_on:
+      ml-brain:
+        condition: service_healthy
+      audit-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8004/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Person 5: ML Correlation Brain ──────────────────────────
+  ml-brain:
+    build:
+      context: ./ml-brain
+      dockerfile: Dockerfile
+    ports:
+      - "${MLBRAIN_PORT:-8005}:8005"
+    environment:
+      <<: *common-env
+      MLBRAIN_PORT: 8005
+      AUDIT_SERVICE_URL: http://audit-service:8006/audit/events
+    volumes:
+      - ml-brain-db:/app/db
+      - ml-brain-models:/app/models
+    networks:
+      - orbital
+    restart: unless-stopped
+    profiles: ["", "gs"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8005/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Person 6: Audit Service + Dashboard ─────────────────────
+  audit-service:
+    build:
+      context: ./audit-service
+      dockerfile: Dockerfile
+    ports:
+      - "${AUDIT_PORT:-8006}:8006"
+    environment:
+      <<: *common-env
+      AUDIT_PORT: 8006
+    volumes:
+      - audit-db:/app/data
+    networks:
+      - orbital
+    restart: unless-stopped
+    profiles: ["", "gs"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8006/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+      args:
+        VITE_AUDIT_URL: http://${GS_HOST:-127.0.0.1}:${AUDIT_PORT:-8006}
+        VITE_MLBRAIN_URL: http://${GS_HOST:-127.0.0.1}:${MLBRAIN_PORT:-8005}
+    ports:
+      - "${DASHBOARD_PORT:-5173}:5173"
+    environment:
+      <<: *common-env
+    networks:
+      - orbital
+    restart: unless-stopped
+    profiles: ["", "gs"]
+    depends_on:
+      audit-service:
+        condition: service_healthy
+
+networks:
+  orbital:
+    driver: bridge
+
+volumes:
+  ml-brain-db:
+  ml-brain-models:
+  audit-db:

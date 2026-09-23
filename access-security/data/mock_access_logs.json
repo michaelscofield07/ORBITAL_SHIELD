@@ -1,0 +1,93 @@
+[
+  {
+    "record_id": "REC-001",
+    "timestamp": "2026-08-25T09:30:00Z",
+    "user_id": "operator_01",
+    "source_ip": "10.0.0.15",
+    "device_id": "GS-DEVICE-01",
+    "action": "LOGIN",
+    "result": "SUCCESS",
+    "role": "operator",
+    "ground_station_id": "GS-MAIN-01",
+    "satellite_id": "SAT-EO-01"
+  },
+  {
+    "record_id": "REC-002",
+    "timestamp": "2026-08-25T10:00:00Z",
+    "user_id": "user_attacker",
+    "source_ip": "192.168.1.100",
+    "device_id": "GS-DEVICE-02",
+    "action": "LOGIN",
+    "result": "FAILURE",
+    "role": "operator",
+    "satellite_id": "SAT-EO-01"
+  },
+  {
+    "record_id": "REC-003",
+    "timestamp": "2026-08-25T10:00:15Z",
+    "user_id": "user_attacker",
+    "source_ip": "192.168.1.100",
+    "device_id": "GS-DEVICE-02",
+    "action": "LOGIN",
+    "result": "FAILURE",
+    "role": "operator",
+    "satellite_id": "SAT-EO-01"
+  },
+  {
+    "record_id": "REC-004",
+    "timestamp": "2026-08-25T10:00:30Z",
+    "user_id": "user_attacker",
+    "source_ip": "192.168.1.100",
+    "device_id": "GS-DEVICE-02",
+    "action": "LOGIN",
+    "result": "FAILURE",
+    "role": "operator",
+    "satellite_id": "SAT-EO-01"
+  },
+  {
+    "record_id": "REC-005",
+    "timestamp": "2026-08-25T02:15:00Z",
+    "user_id": "operator_night",
+    "source_ip": "10.0.0.22",
+    "device_id": "GS-DEVICE-01",
+    "action": "LOGIN",
+    "result": "SUCCESS",
+    "role": "operator",
+    "satellite_id": "SAT-EO-01"
+  },
+  {
+    "record_id": "REC-006",
+    "timestamp": "2026-08-25T11:20:00Z",
+    "user_id": "operator_03",
+    "source_ip": "172.16.4.55",
+    "device_id": "UNTRUSTED-DEVICE-999",
+    "action": "LOGIN",
+    "result": "SUCCESS",
+    "role": "operator",
+    "satellite_id": "SAT-EO-01"
+  },
+  {
+    "record_id": "REC-007",
+    "timestamp": "2026-08-25T12:00:00Z",
+    "user_id": "operator_rogue",
+    "source_ip": "10.0.0.45",
+    "device_id": "GS-DEVICE-01",
+    "action": "ROLE_ELEVATION",
+    "result": "SUCCESS",
+    "role": "sysadmin",
+    "previous_role": "operator",
+    "satellite_id": "SAT-EO-01"
+  },
+  {
+    "record_id": "REC-008",
+    "timestamp": "2026-08-25T13:45:00Z",
+    "user_id": "operator_05",
+    "source_ip": "10.0.0.50",
+    "device_id": "GS-DEVICE-01",
+    "action": "PAYLOAD_SHUTDOWN",
+    "resource": "SAT-PAYLOAD-01",
+    "result": "SUCCESS",
+    "role": "operator",
+    "satellite_id": "SAT-EO-01"
+  }
+]
